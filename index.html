@@ -88,19 +88,20 @@
       return url.toString();
     }
 
-    // ---------- Data fetching (Lorcana.gg primary; Lorcast fallback) ----------
-    function mapFromLorcanaGG(item) {
+    // ---------- Data fetching (Lorcana-API.com primary; Lorcast fallback) ----------
+    function mapFromLorcanaAPI(item) {
       if (!item) return null;
-      var img = item.image || (item.imageUrls && (item.imageUrls.full || item.imageUrls.large || item.imageUrls.normal));
-      var setName = item.set || item.set_name || item.setName || (item.sets && item.sets[0]) || '';
-      var number = item.number || item.collectorNumber || item.collector_number || item.no || '';
+      var img = item.Image || item.image || item.ImageUrl || item.ImageURL || (item.Images && (item.Images.Full || item.Images.full || item.Images.Normal));
+      var setName = item.Set_Name || item.Set || item.set_name || item.setName || '';
+      var number = item.Number || item.number || item.Collector_Number || item.collector_number || '';
+      var id = (item.ID || item.Id || item.id || (item.Name || item.name) + "-" + number + "-" + setName).toString();
       return {
-        id: (item.id || (item.slug || (item.name + "-" + number + "-" + setName))).toString(),
-        name: item.name || "",
+        id: id,
+        name: item.Name || item.name || "",
         set: setName,
         number: number,
         image_url: img || "",
-        _source: "Lorcana.gg",
+        _source: "Lorcana-API.com",
         _raw: item
       };
     }
@@ -122,9 +123,9 @@
       };
     }
 
-    async function fetchFromLorcanaGG(query) {
+    async function fetchFromLorcanaAPI(query) {
       try {
-        var url = new URL('https://lorcana.gg/api/cards');
+        var url = new URL('https://api.lorcana-api.com/cards/fetch');
         if (query) url.searchParams.set('search', query);
         var res = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -132,7 +133,7 @@
         var arr = Array.isArray(data) ? data : (Array.isArray(data && data.cards) ? data.cards : []);
         var mapped = [];
         for (var i=0;i<arr.length;i++) {
-          var m = mapFromLorcanaGG(arr[i]);
+          var m = mapFromLorcanaAPI(arr[i]);
           if (m && m.image_url) mapped.push(m);
         }
         return mapped;
@@ -163,7 +164,7 @@
 
     async function searchCards(query, uniqueMode) {
       if (!query) return [];
-      var primary = await fetchFromLorcanaGG(query);
+      var primary = await fetchFromLorcanaAPI(query);
       if (primary && primary.length) return primary;
       var fallback = await fetchFromLorcast(query, uniqueMode);
       return fallback;
@@ -286,7 +287,7 @@
         <div className="container">
           <div className="header">
             <h1>Lorcana Card Image Browser</h1>
-            <div className="muted">Type a keyword (e.g., <code>elsa</code>, <code>song</code>). Cards show the data source tag.</div>
+            <div className="muted">Primary: Lorcana-API.com (badge shows source). Fallback: Lorcast.</div>
           </div>
 
           <div className="row">
