@@ -29,6 +29,8 @@
     .error { color:#dc2626; font-weight:600; }
     html.overlay, body.overlay { height:100%; background: transparent; }
     .wrap { width:100vw; height:100vh; display:grid; place-items:center; }
+    .fade-in { opacity: 0; transition: opacity .2s ease-in; }
+    .fade-in.loaded { opacity: 1; }
   </style>
 </head>
 <body>
@@ -41,11 +43,11 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 
-  <!-- React preset only; code avoids optional chaining/nullish -->
+  <!-- React preset only -->
   <script type="text/babel" data-presets="react">
     const { useEffect, useMemo, useRef, useState } = React;
 
-    // ======= Firebase config (from your project) =======
+    // ======= Firebase config (your project) =======
     var FIREBASE_CONFIG = {
       apiKey: "AIzaSyDkXEhCduyXpXRUqbUFIuFIUHWiQbVZ9Kw",
       authDomain: "lorcana-efc7a.firebaseapp.com",
@@ -56,9 +58,8 @@
       appId: "1:634624437266:web:8c8c4ad2d461e3d7567ccb",
       measurementId: "G-MBJ0ZJFR2W"
     };
-    // Channel id so you can run multiple overlays:
     var DEFAULT_CHANNEL = "default";
-    // ===================================================
+    // ==============================================
 
     function initFirebase() {
       try {
@@ -167,10 +168,14 @@
       function pushSelectionToLocal(card) {
         var dig = card && card.image_uris && card.image_uris.digital;
         var src = (dig && (dig.large || dig.normal || dig.small)) || '';
+        var payload = { image: src, title: card.name + (card.version ? ' - ' + card.version : ''), updatedAt: Date.now() };
         try {
+          // Write payload first (atomic-ish), then signal with timestamp key
+          localStorage.setItem('lorcana:overlayPayload', JSON.stringify(payload));
+          localStorage.setItem('lorcana:overlayUpdatedAt', String(payload.updatedAt));
+          // Legacy keys kept for backward compatibility
           localStorage.setItem('lorcana:overlayImage', src);
-          localStorage.setItem('lorcana:overlayTitle', card.name + (card.version ? ' - ' + card.version : ''));
-          localStorage.setItem('lorcana:overlayUpdatedAt', String(Date.now()));
+          localStorage.setItem('lorcana:overlayTitle', payload.title);
         } catch (e) {}
       }
 
@@ -236,7 +241,6 @@
             <input ref={urlInputRef} type="url" value={overlayUrl} readOnly onFocus={function (e) { e.currentTarget.select(); }} style={{flex:'1 1 auto', minWidth:'300px'}} />
             <button className="btn" onClick={copyOverlayUrl}>Copy</button>
             {copyMsg && <span className="muted-inline">{copyMsg}</span>}
-            {!db && <span className="muted-inline"> (Firebase not available)</span>}
           </div>
 
           {loading && <div className="muted">Searching...</div>}
@@ -247,7 +251,8 @@
           )}
           {!loading && !error && view === 'list' && (
             <div style={{background:'#fff', border:'1px solid #e2e8f0', borderRadius:'14px', overflow:'hidden'}}>
-              {cards.map(function (card) { return <Row key={card.id} card={card} onSelect={selectForOverlay} />; })}</div>
+              {cards.map(function (card) { return <Row key={card.id} card={card} onSelect={selectForOverlay} />; })}
+            </div>
           )}
 
           {selected && <Preview card={selected} />}
@@ -300,6 +305,14 @@
       );
     }
 
+    function preload(src, cb) {
+      if (!src) return;
+      var img = new Image();
+      img.onload = function(){ cb(true); };
+      img.onerror = function(){ cb(false); };
+      img.src = src;
+    }
+
     function OverlayPage() {
       const params = new URLSearchParams(location.search);
       const fit = params.get('fit') || 'contain';
@@ -311,14 +324,40 @@
       const [src, setSrc] = useState('');
       const [title, setTitle] = useState('');
       const [stamp, setStamp] = useState('');
+      const [loaded, setLoaded] = useState(false);
       const db = useMemo(initFirebase, []);
+
+      function applyPayload(payload) {
+        if (!payload || !payload.image) return; // don't blank
+        var newSrc = payload.image;
+        var newTitle = payload.title || '';
+        preload(newSrc, function(ok){
+          if (ok) {
+            setSrc(newSrc);
+            setTitle(newTitle);
+            setLoaded(false);
+            // next tick add loaded class
+            setTimeout(function(){ setLoaded(true); }, 0);
+          }
+        });
+      }
 
       // Initial local read
       useEffect(function () {
         try {
-          setSrc(localStorage.getItem('lorcana:overlayImage') || '');
-          setTitle(localStorage.getItem('lorcana:overlayTitle') || '');
-          setStamp(localStorage.getItem('lorcana:overlayUpdatedAt') || '');
+          var raw = localStorage.getItem('lorcana:overlayPayload');
+          var payload = null;
+          try { payload = raw ? JSON.parse(raw) : null; } catch (e) {}
+          if (payload && payload.image) {
+            setStamp(String(payload.updatedAt || ''));
+            applyPayload(payload);
+          } else {
+            // Legacy keys
+            var img = localStorage.getItem('lorcana:overlayImage') || '';
+            var ttl = localStorage.getItem('lorcana:overlayTitle') || '';
+            var st = localStorage.getItem('lorcana:overlayUpdatedAt') || '';
+            if (img) { setSrc(img); setTitle(ttl); setStamp(st); setLoaded(true); }
+          }
         } catch (e) {}
       }, []);
 
@@ -328,10 +367,9 @@
         var ref = db.ref('/lorcana/' + channel);
         var unsub = ref.on('value', function (snap) {
           var v = snap.val() || {};
-          if (v && v.updatedAt && String(v.updatedAt) !== String(stamp)) {
+          if (v && v.updatedAt && String(v.updatedAt) !== String(stamp) && v.image) {
             setStamp(String(v.updatedAt));
-            setSrc(v.image || '');
-            setTitle(v.title || '');
+            applyPayload(v);
           }
         });
         return function () { try { ref.off('value', unsub); } catch (e) {} };
@@ -343,9 +381,13 @@
           try {
             var s = localStorage.getItem('lorcana:overlayUpdatedAt') || '';
             if (s !== stamp) {
-              setStamp(s);
-              setSrc(localStorage.getItem('lorcana:overlayImage') || '');
-              setTitle(localStorage.getItem('lorcana:overlayTitle') || '');
+              var raw = localStorage.getItem('lorcana:overlayPayload');
+              var payload = null;
+              try { payload = raw ? JSON.parse(raw) : null; } catch (e) {}
+              if (payload && payload.updatedAt && String(payload.updatedAt) === String(s)) {
+                setStamp(String(s));
+                applyPayload(payload);
+              }
             }
           } catch (e) {}
         }, 1000);
@@ -358,7 +400,7 @@
 
       return (
         <div className="wrap">
-          {src ? <img src={src} alt={title} style={styleImg} /> : <div style={{ color:'#94a3b8' }}>No selection yet. Select a card in the controller.</div>}
+          {src ? <img src={src} alt={title} className={"fade-in" + (loaded ? " loaded" : "")} style={styleImg} /> : <div style={{ color:'#94a3b8' }}>No selection yet. Select a card in the controller.</div>}
         </div>
       );
     }
