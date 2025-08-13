@@ -38,7 +38,7 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
 
-  <!-- Only react preset; code avoids optional chaining/nullish -->
+  <!-- React preset only; code avoids optional chaining/nullish -->
   <script type="text/babel" data-presets="react">
     const { useEffect, useMemo, useRef, useState } = React;
 
@@ -138,6 +138,7 @@
         try {
           localStorage.setItem('lorcana:overlayImage', src);
           localStorage.setItem('lorcana:overlayTitle', card.name + (card.version ? ' - ' + card.version : ''));
+          localStorage.setItem('lorcana:overlayUpdatedAt', String(Date.now()));
         } catch (e) {}
       }
 
@@ -260,22 +261,31 @@
 
       const [src, setSrc] = useState('');
       const [title, setTitle] = useState('');
+      const [stamp, setStamp] = useState('');
 
+      // Initial read
       useEffect(function () {
         try {
           setSrc(localStorage.getItem('lorcana:overlayImage') || '');
           setTitle(localStorage.getItem('lorcana:overlayTitle') || '');
+          setStamp(localStorage.getItem('lorcana:overlayUpdatedAt') || '');
         } catch (e) {}
       }, []);
 
+      // POLL localStorage every second so OBS (separate process) sees updates
       useEffect(function () {
-        function onStorage(e) {
-          if (e.key === 'lorcana:overlayImage') setSrc(e.newValue || '');
-          if (e.key === 'lorcana:overlayTitle') setTitle(e.newValue || '');
-        }
-        window.addEventListener('storage', onStorage);
-        return function () { window.removeEventListener('storage', onStorage); };
-      }, []);
+        var t = setInterval(function () {
+          try {
+            var s = localStorage.getItem('lorcana:overlayUpdatedAt') || '';
+            if (s !== stamp) {
+              setStamp(s);
+              setSrc(localStorage.getItem('lorcana:overlayImage') || '');
+              setTitle(localStorage.getItem('lorcana:overlayTitle') || '');
+            }
+          } catch (e) {}
+        }, 1000);
+        return function () { clearInterval(t); };
+      }, [stamp]);
 
       const styleImg = (fit === 'cover')
         ? { width:'100%', height:'100%', objectFit:'cover' }
