@@ -38,13 +38,17 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
 
-  <!-- Use React preset + plugins for optional chaining and nullish coalescing -->
-  <script type="text/babel" data-presets="react" data-plugins="proposal-optional-chaining,proposal-nullish-coalescing-operator">
+  <!-- Only react preset; code avoids optional chaining/nullish -->
+  <script type="text/babel" data-presets="react">
     const { useEffect, useMemo, useRef, useState } = React;
 
-    function useDebouncedValue(value, delay = 400) {
+    function useDebouncedValue(value, delay) {
+      if (delay === void 0) delay = 400;
       const [debounced, setDebounced] = useState(value);
-      useEffect(() => { const t = setTimeout(() => setDebounced(value), delay); return () => clearTimeout(t); }, [value, delay]);
+      useEffect(function () {
+        const t = setTimeout(function () { setDebounced(value); }, delay);
+        return function () { clearTimeout(t); };
+      }, [value, delay]);
       return debounced;
     }
 
@@ -78,7 +82,7 @@
 
       const debounced = useDebouncedValue(query, 350);
 
-      useEffect(() => {
+      useEffect(function () {
         try {
           const q = sessionStorage.getItem('lorcast:lastQuery');
           const results = sessionStorage.getItem('lorcast:lastResults');
@@ -88,13 +92,13 @@
           if (unique) setUniqueMode(unique);
           if (v) setView(v);
           if (results) setCards(JSON.parse(results));
-        } catch {}
+        } catch (e) {}
       }, []);
 
-      useEffect(() => { try { sessionStorage.setItem('lorcast:lastUnique', uniqueMode); } catch {} }, [uniqueMode]);
-      useEffect(() => { try { sessionStorage.setItem('lorcast:lastView', view); } catch {} }, [view]);
+      useEffect(function () { try { sessionStorage.setItem('lorcast:lastUnique', uniqueMode); } catch (e) {} }, [uniqueMode]);
+      useEffect(function () { try { sessionStorage.setItem('lorcast:lastView', view); } catch (e) {} }, [view]);
 
-      useEffect(() => {
+      useEffect(function () {
         const controller = new AbortController();
         async function run() {
           setError('');
@@ -107,42 +111,51 @@
             const res = await fetch(url.toString(), { signal: controller.signal });
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const data = await res.json();
-            const results = Array.isArray(data?.results) ? data.results : [];
+            const results = (data && Array.isArray(data.results)) ? data.results : [];
             setCards(results);
-            try { sessionStorage.setItem('lorcast:lastResults', JSON.stringify(results)); sessionStorage.setItem('lorcast:lastQuery', debounced); } catch {}
+            try { sessionStorage.setItem('lorcast:lastResults', JSON.stringify(results)); sessionStorage.setItem('lorcast:lastQuery', debounced); } catch (e) {}
           } catch (e) {
             if (e && e.name === 'AbortError') return;
             setError((e && e.message) || 'Something went wrong');
           } finally { setLoading(false); }
         }
         run();
-        return () => controller.abort();
+        return function () { controller.abort(); };
       }, [debounced, uniqueMode]);
 
-      useEffect(() => {
-        const imgs = cards.slice(0,60).map(c => c?.image_uris?.digital?.large || c?.image_uris?.digital?.normal).filter(Boolean);
-        imgs.forEach(src => { const img = new Image(); img.src = src; });
+      useEffect(function () {
+        const imgs = cards.slice(0,60).map(function (c) {
+          var dig = c && c.image_uris && c.image_uris.digital;
+          return dig && (dig.large || dig.normal);
+        }).filter(Boolean);
+        imgs.forEach(function (src) { var img = new Image(); img.src = src; });
       }, [cards]);
 
       function selectForOverlay(card) {
         setSelected(card);
-        const src = card?.image_uris?.digital?.large || card?.image_uris?.digital?.normal || card?.image_uris?.digital?.small || '';
-        try { localStorage.setItem('lorcana:overlayImage', src); localStorage.setItem('lorcana:overlayTitle', card.name + (card.version ? ' - ' + card.version : '')); } catch {}
+        var dig = card && card.image_uris && card.image_uris.digital;
+        var src = (dig && (dig.large || dig.normal || dig.small)) || '';
+        try {
+          localStorage.setItem('lorcana:overlayImage', src);
+          localStorage.setItem('lorcana:overlayTitle', card.name + (card.version ? ' - ' + card.version : ''));
+        } catch (e) {}
       }
 
-      const overlayUrl = useMemo(() => buildOverlayUrl(), []);
+      const overlayUrl = useMemo(function () { return buildOverlayUrl(); }, []);
 
       async function copyOverlayUrl() {
         const text = overlayUrl; setCopyMsg('');
         try {
           if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
             await navigator.clipboard.writeText(text);
-            setCopyMsg('Copied to clipboard'); setTimeout(() => setCopyMsg(''), 1500); return;
+            setCopyMsg('Copied to clipboard'); setTimeout(function () { setCopyMsg(''); }, 1500); return;
           }
           throw new Error('Clipboard API unavailable');
-        } catch (_) {
-          if (urlInputRef.current) { try { urlInputRef.current.focus(); urlInputRef.current.select(); if (document.execCommand) document.execCommand('copy'); } catch {} }
-          setCopyMsg('Press Ctrl+C (Cmd+C on Mac) to copy'); setTimeout(() => setCopyMsg(''), 3000);
+        } catch (e) {
+          if (urlInputRef.current) {
+            try { urlInputRef.current.focus(); urlInputRef.current.select(); if (document.execCommand) document.execCommand('copy'); } catch (e2) {}
+          }
+          setCopyMsg('Press Ctrl+C (Cmd+C on Mac) to copy'); setTimeout(function () { setCopyMsg(''); }, 3000);
         }
       }
 
@@ -154,14 +167,14 @@
           </div>
 
           <div className="row">
-            <input type="text" placeholder="Search by name, type, text, ink, rarity..." value={query} onChange={e => setQuery(e.target.value)} />
+            <input type="text" placeholder="Search by name, type, text, ink, rarity..." value={query} onChange={function (e) { setQuery(e.target.value); }} />
             <label className="muted-inline">Unique:</label>
-            <select value={uniqueMode} onChange={e => setUniqueMode(e.target.value)}>
+            <select value={uniqueMode} onChange={function (e) { setUniqueMode(e.target.value); }}>
               <option value="cards">cards</option>
               <option value="prints">prints</option>
             </select>
             <label className="muted-inline">View:</label>
-            <select value={view} onChange={e => setView(e.target.value)}>
+            <select value={view} onChange={function (e) { setView(e.target.value); }}>
               <option value="grid">grid</option>
               <option value="list">list</option>
             </select>
@@ -169,7 +182,7 @@
 
           <div className="row">
             <label className="muted-inline">Overlay URL:</label>
-            <input ref={urlInputRef} type="url" value={overlayUrl} readOnly onFocus={e => e.currentTarget.select()} style={{flex:'1 1 auto', minWidth:'300px'}} />
+            <input ref={urlInputRef} type="url" value={overlayUrl} readOnly onFocus={function (e) { e.currentTarget.select(); }} style={{flex:'1 1 auto', minWidth:'300px'}} />
             <button className="btn" onClick={copyOverlayUrl}>Copy</button>
             {copyMsg && <span className="muted-inline">{copyMsg}</span>}
           </div>
@@ -177,14 +190,12 @@
           {loading && <div className="muted">Searching...</div>}
           {error && <div className="error">{error}</div>}
 
-          {!loading && !error && (view === "grid") && (
-            <div className="grid">
-              {cards.map(card => <CardTile key={card.id} card={card} onSelect={selectForOverlay} />)}
-            </div>
+          {!loading && !error && view === 'grid' && (
+            <div className="grid">{cards.map(function (card) { return <CardTile key={card.id} card={card} onSelect={selectForOverlay} />; })}</div>
           )}
-          {!loading && !error && (view === "list") && (
-            <div style={{background:"#fff", border:"1px solid #e2e8f0", borderRadius:"14px", overflow:"hidden"}}>
-              {cards.map(card => <Row key={card.id} card={card} onSelect={selectForOverlay} />)}
+          {!loading && !error && view === 'list' && (
+            <div style={{background:'#fff', border:'1px solid #e2e8f0', borderRadius:'14px', overflow:'hidden'}}>
+              {cards.map(function (card) { return <Row key={card.id} card={card} onSelect={selectForOverlay} />; })}
             </div>
           )}
 
@@ -196,10 +207,11 @@
     }
 
     function CardTile({ card, onSelect }) {
-      const src = card?.image_uris?.digital?.large || card?.image_uris?.digital?.normal || card?.image_uris?.digital?.small || null;
-      const onKey = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } }
+      var dig = card && card.image_uris && card.image_uris.digital;
+      var src = (dig && (dig.large || dig.normal || dig.small)) || null;
+      const onKey = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } };
       return (
-        <figure role="button" tabIndex={0} aria-label={"Select " + card.name + (card.version ? " - " + card.version : "") + " for overlay"} onClick={() => onSelect(card)} onKeyDown={onKey}>
+        <figure role="button" tabIndex={0} aria-label={"Select " + card.name + (card.version ? " - " + card.version : "") + " for overlay"} onClick={function () { onSelect(card); }} onKeyDown={onKey}>
           {src ? <img src={src} alt={(card.name || "") + " " + (card.version || "")} style={{width:"100%", display:"block"}} loading="lazy" /> : <div style={{aspectRatio:"146/204", display:"grid", placeItems:"center", color:"#94a3b8"}}>No image</div>}
           <figcaption>
             <div className="title">{card.name}{card.version ? " - " + card.version : ""}</div>
@@ -210,13 +222,14 @@
     }
 
     function Row({ card, onSelect }) {
-      const src = card?.image_uris?.digital?.normal || card?.image_uris?.digital?.small || null;
-      const onKey = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } }
+      var dig = card && card.image_uris && card.image_uris.digital;
+      var src = (dig && (dig.normal || dig.small)) || null;
+      const onKey = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } };
       return (
-        <div role="button" tabIndex={0} onClick={() => onSelect(card)} onKeyDown={onKey} style={{display:"flex", gap:"10px", padding:"10px", alignItems:"center", cursor:"pointer"}}>
+        <div role="button" tabIndex={0} onClick={function () { onSelect(card); }} onKeyDown={onKey} style={{display:"flex", gap:"10px", padding:"10px", alignItems:"center", cursor:"pointer"}}>
           {src ? <img src={src} alt="" style={{width:"80px", borderRadius:"8px", border:"1px solid #e2e8f0"}} loading="lazy" /> : <div style={{width:"80px", aspectRatio:"146/204", background:"#f1f5f9", borderRadius:"8px"}}/>}
           <div style={{minWidth:0}}>
-            <div className="title" style={{whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{card.name}{card.version ? " - " + card.version : ""}</div>
+            <div className="title" style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>{card.name}{card.version ? " - " + card.version : ""}</div>
             <div className="sub">{(card.set && card.set.name) || "Unknown Set"} &middot; #{card.collector_number || "?"}</div>
             {card.text && <div className="muted" style={{marginTop:"4px", whiteSpace:"pre-wrap"}}>{card.text}</div>}
           </div>
@@ -225,7 +238,8 @@
     }
 
     function Preview({ card }) {
-      const src = card?.image_uris?.digital?.large || card?.image_uris?.digital?.normal || card?.image_uris?.digital?.small || null;
+      var dig = card && card.image_uris && card.image_uris.digital;
+      var src = (dig && (dig.large || dig.normal || dig.small)) || null;
       return (
         <div className="preview">
           {src && <img src={src} alt="preview" />}
@@ -242,18 +256,28 @@
       const fit = params.get('fit') || 'contain';
       const bg = params.get('bg') || 'transparent';
 
-      useEffect(() => { if (bg !== 'transparent') document.body.style.background = bg; }, [bg]);
+      useEffect(function () { if (bg !== 'transparent') document.body.style.background = bg; }, [bg]);
 
       const [src, setSrc] = useState('');
       const [title, setTitle] = useState('');
 
-      useEffect(() => { try { setSrc(localStorage.getItem('lorcana:overlayImage') || ''); setTitle(localStorage.getItem('lorcana:overlayTitle') || ''); } catch {} }, []);
-      useEffect(() => {
-        function onStorage(e) { if (e.key === 'lorcana:overlayImage') setSrc(e.newValue || ''); if (e.key === 'lorcana:overlayTitle') setTitle(e.newValue || ''); }
-        window.addEventListener('storage', onStorage); return () => window.removeEventListener('storage', onStorage);
+      useEffect(function () {
+        try {
+          setSrc(localStorage.getItem('lorcana:overlayImage') || '');
+          setTitle(localStorage.getItem('lorcana:overlayTitle') || '');
+        } catch (e) {}
       }, []);
 
-      const styleImg = fit === 'cover'
+      useEffect(function () {
+        function onStorage(e) {
+          if (e.key === 'lorcana:overlayImage') setSrc(e.newValue || '');
+          if (e.key === 'lorcana:overlayTitle') setTitle(e.newValue || '');
+        }
+        window.addEventListener('storage', onStorage);
+        return function () { window.removeEventListener('storage', onStorage); };
+      }, []);
+
+      const styleImg = (fit === 'cover')
         ? { width:'100%', height:'100%', objectFit:'cover' }
         : { maxWidth:'100%', maxHeight:'100%', objectFit:'contain' };
 
@@ -271,26 +295,27 @@
       async function runTests() {
         setStatus('running');
         const tests = [
-          { name: 'Basic name search (elsa)', query: 'elsa', validate: d => Array.isArray(d?.results) && d.results.length > 0 },
-          { name: 'Type filter (type:Action)', query: 'type:Action', validate: d => Array.isArray(d?.results) && d.results.length > 0 },
-          { name: 'Ink filter (ink:Amethyst)', query: 'ink:Amethyst', validate: d => Array.isArray(d?.results) && d.results.length > 0 },
-          { name: 'Keyword in text (Shift)', query: 'Shift', validate: d => Array.isArray(d?.results) && d.results.length > 0 },
-          { name: 'Overlay URL builder attaches overlay=1', query: '__overlay_url_test__', validate: () => buildOverlayUrl().includes('overlay=1') },
+          { name: 'Basic name search (elsa)', query: 'elsa', validate: function (d) { return d && Array.isArray(d.results) && d.results.length > 0; } },
+          { name: 'Type filter (type:Action)', query: 'type:Action', validate: function (d) { return d && Array.isArray(d.results) && d.results.length > 0; } },
+          { name: 'Ink filter (ink:Amethyst)', query: 'ink:Amethyst', validate: function (d) { return d && Array.isArray(d.results) && d.results.length > 0; } },
+          { name: 'Keyword in text (Shift)', query: 'Shift', validate: function (d) { return d && Array.isArray(d.results) && d.results.length > 0; } },
+          { name: 'Overlay URL builder attaches overlay=1', query: '__overlay_url_test__', validate: function () { return buildOverlayUrl().indexOf('overlay=1') !== -1; } },
         ];
 
         const out = [];
-        for (const t of tests) {
+        for (var i=0; i<tests.length; i++) {
+          var t = tests[i];
           try {
             if (t.query === '__overlay_url_test__') {
-              const ok = t.validate();
-              out.push({ name: t.name, ok, details: ok ? 'pass' : 'fail' });
+              var ok = t.validate();
+              out.push({ name: t.name, ok: ok, details: ok ? 'pass' : 'fail' });
               continue;
             }
             const url = new URL('https://api.lorcast.com/v0/cards/search');
             url.searchParams.set('q', t.query); url.searchParams.set('unique', 'cards');
             const res = await fetch(url.toString()); if (!res.ok) throw new Error('HTTP ' + res.status);
-            const data = await res.json(); const ok = t.validate(data);
-            out.push({ name: t.name, ok, details: ok ? 'pass' : ('fail: got ' + (Array.isArray(data?.results) ? data.results.length : 'no') + ' results') });
+            const data = await res.json(); var ok2 = t.validate(data);
+            out.push({ name: t.name, ok: ok2, details: ok2 ? 'pass' : ('fail: got ' + (data && Array.isArray(data.results) ? data.results.length : 'no') + ' results') });
           } catch (e) {
             out.push({ name: t.name, ok: false, details: (e && e.message) || 'error' });
           }
@@ -310,7 +335,7 @@
     function TestResults({ results }) {
       return (
         <div className="muted" style={{fontSize:'12px'}}>
-          {results.map((r, i) => <div key={i} style={{marginTop:'4px', color: r.ok ? '#15803d' : '#b91c1c'}}>[{r.ok ? 'PASS' : 'FAIL'}] {r.name} - {r.details}</div>)}
+          {results.map(function (r, i) { return <div key={i} style={{marginTop:'4px', color: r.ok ? '#15803d' : '#b91c1c'}}>[{r.ok ? 'PASS' : 'FAIL'}] {r.name} - {r.details}</div>; })}
         </div>
       );
     }
