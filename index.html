@@ -27,7 +27,6 @@
     .btn { cursor:pointer; }
     .muted-inline { color:#64748b; font-size:12px; }
     .error { color:#dc2626; font-weight:600; }
-    /* Overlay */
     html.overlay, body.overlay { height:100%; background: transparent; }
     .wrap { width:100vw; height:100vh; display:grid; place-items:center; }
   </style>
@@ -35,12 +34,12 @@
 <body>
   <div id="root"></div>
 
-  <!-- React / ReactDOM / Babel (no build tools required) -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
 
-  <script type="text/babel" data-presets="env,react">
+  <!-- Use React preset + plugins for optional chaining and nullish coalescing -->
+  <script type="text/babel" data-presets="react" data-plugins="proposal-optional-chaining,proposal-nullish-coalescing-operator">
     const { useEffect, useMemo, useRef, useState } = React;
 
     function useDebouncedValue(value, delay = 400) {
@@ -55,7 +54,6 @@
       return url.toString();
     }
 
-    // Entrypoint chooses between controller and overlay modes
     function App() {
       const params = new URLSearchParams(window.location.search);
       const overlayMode = params.get('overlay') === '1';
@@ -67,13 +65,12 @@
       return <ControllerPage />;
     }
 
-    // Controller/search UI
     function ControllerPage() {
       const [query, setQuery] = useState('');
       const [uniqueMode, setUniqueMode] = useState('cards');
       const [view, setView] = useState('grid');
       const [cards, setCards] = useState([]);
-            const [loading, setLoading] = useState(false);
+      const [loading, setLoading] = useState(false);
       const [error, setError] = useState('');
       const [selected, setSelected] = useState(null);
       const [copyMsg, setCopyMsg] = useState('');
@@ -110,7 +107,7 @@
             const res = await fetch(url.toString(), { signal: controller.signal });
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const data = await res.json();
-            const results = Array.isArray(data && data.results) ? data.results : [];
+            const results = Array.isArray(data?.results) ? data.results : [];
             setCards(results);
             try { sessionStorage.setItem('lorcast:lastResults', JSON.stringify(results)); sessionStorage.setItem('lorcast:lastQuery', debounced); } catch {}
           } catch (e) {
@@ -123,13 +120,13 @@
       }, [debounced, uniqueMode]);
 
       useEffect(() => {
-        const imgs = cards.slice(0,60).map(c => c && c.image_uris && c.image_uris.digital && (c.image_uris.digital.large || c.image_uris.digital.normal)).filter(Boolean);
+        const imgs = cards.slice(0,60).map(c => c?.image_uris?.digital?.large || c?.image_uris?.digital?.normal).filter(Boolean);
         imgs.forEach(src => { const img = new Image(); img.src = src; });
       }, [cards]);
 
       function selectForOverlay(card) {
         setSelected(card);
-        const src = (card && card.image_uris && card.image_uris.digital && (card.image_uris.digital.large || card.image_uris.digital.normal || card.image_uris.digital.small)) || '';
+        const src = card?.image_uris?.digital?.large || card?.image_uris?.digital?.normal || card?.image_uris?.digital?.small || '';
         try { localStorage.setItem('lorcana:overlayImage', src); localStorage.setItem('lorcana:overlayTitle', card.name + (card.version ? ' - ' + card.version : '')); } catch {}
       }
 
@@ -199,7 +196,7 @@
     }
 
     function CardTile({ card, onSelect }) {
-      const src = (card && card.image_uris && card.image_uris.digital && (card.image_uris.digital.large || card.image_uris.digital.normal || card.image_uris.digital.small)) || null;
+      const src = card?.image_uris?.digital?.large || card?.image_uris?.digital?.normal || card?.image_uris?.digital?.small || null;
       const onKey = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } }
       return (
         <figure role="button" tabIndex={0} aria-label={"Select " + card.name + (card.version ? " - " + card.version : "") + " for overlay"} onClick={() => onSelect(card)} onKeyDown={onKey}>
@@ -213,7 +210,7 @@
     }
 
     function Row({ card, onSelect }) {
-      const src = (card && card.image_uris && card.image_uris.digital && (card.image_uris.digital.normal || card.image_uris.digital.small)) || null;
+      const src = card?.image_uris?.digital?.normal || card?.image_uris?.digital?.small || null;
       const onKey = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } }
       return (
         <div role="button" tabIndex={0} onClick={() => onSelect(card)} onKeyDown={onKey} style={{display:"flex", gap:"10px", padding:"10px", alignItems:"center", cursor:"pointer"}}>
@@ -228,7 +225,7 @@
     }
 
     function Preview({ card }) {
-      const src = (card && card.image_uris && card.image_uris.digital && (card.image_uris.digital.large || card.image_uris.digital.normal || card.image_uris.digital.small)) || null;
+      const src = card?.image_uris?.digital?.large || card?.image_uris?.digital?.normal || card?.image_uris?.digital?.small || null;
       return (
         <div className="preview">
           {src && <img src={src} alt="preview" />}
@@ -240,7 +237,6 @@
       );
     }
 
-    // Overlay-only page
     function OverlayPage() {
       const params = new URLSearchParams(location.search);
       const fit = params.get('fit') || 'contain';
@@ -268,7 +264,6 @@
       );
     }
 
-    // Minimal test runner
     function TestPanel() {
       const [status, setStatus] = useState('idle');
       const [results, setResults] = useState([]);
@@ -276,10 +271,10 @@
       async function runTests() {
         setStatus('running');
         const tests = [
-          { name: 'Basic name search (elsa)', query: 'elsa', validate: d => Array.isArray(d && d.results) && d.results.length > 0 },
-          { name: 'Type filter (type:Action)', query: 'type:Action', validate: d => Array.isArray(d && d.results) && d.results.length > 0 },
-          { name: 'Ink filter (ink:Amethyst)', query: 'ink:Amethyst', validate: d => Array.isArray(d && d.results) && d.results.length > 0 },
-          { name: 'Keyword in text (Shift)', query: 'Shift', validate: d => Array.isArray(d && d.results) && d.results.length > 0 },
+          { name: 'Basic name search (elsa)', query: 'elsa', validate: d => Array.isArray(d?.results) && d.results.length > 0 },
+          { name: 'Type filter (type:Action)', query: 'type:Action', validate: d => Array.isArray(d?.results) && d.results.length > 0 },
+          { name: 'Ink filter (ink:Amethyst)', query: 'ink:Amethyst', validate: d => Array.isArray(d?.results) && d.results.length > 0 },
+          { name: 'Keyword in text (Shift)', query: 'Shift', validate: d => Array.isArray(d?.results) && d.results.length > 0 },
           { name: 'Overlay URL builder attaches overlay=1', query: '__overlay_url_test__', validate: () => buildOverlayUrl().includes('overlay=1') },
         ];
 
@@ -295,7 +290,7 @@
             url.searchParams.set('q', t.query); url.searchParams.set('unique', 'cards');
             const res = await fetch(url.toString()); if (!res.ok) throw new Error('HTTP ' + res.status);
             const data = await res.json(); const ok = t.validate(data);
-            out.push({ name: t.name, ok, details: ok ? 'pass' : ('fail: got ' + (Array.isArray(data && data.results) ? data.results.length : 'no') + ' results') });
+            out.push({ name: t.name, ok, details: ok ? 'pass' : ('fail: got ' + (Array.isArray(data?.results) ? data.results.length : 'no') + ' results') });
           } catch (e) {
             out.push({ name: t.name, ok: false, details: (e && e.message) || 'error' });
           }
