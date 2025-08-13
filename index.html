@@ -1,412 +1,327 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-
-// FIX: The Canvas doc was an entire HTML page, but this Canvas is set to code/react.
-// That caused the parser to see non-JS at the top and throw "SyntaxError: Unexpected token".
-// Rewriting as a proper React component file with a default export.
-//
-// Features kept:
-// - Live Lorcast search with images
-// - Click a card tile to send image to overlay via localStorage
-// - Overlay mode: open same file with ?overlay=1 (works when controller+overlay share origin)
-// - Copy Overlay URL button with permissions-safe fallback
-// - Minimal test runner (unchanged tests) + one extra deterministic test
-// - ASCII-only punctuation
-
-// =============================
-// Utility: Debounce Hook
-// =============================
-function useDebouncedValue(value, delay = 400) {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const t = setTimeout(() => setDebounced(value), delay);
-    return () => clearTimeout(t);
-  }, [value, delay]);
-  return debounced;
-}
-
-// =============================
-// Helpers
-// =============================
-function buildOverlayUrl(href) {
-  const url = new URL(href);
-  url.searchParams.set("overlay", "1");
-  return url.toString();
-}
-
-// =============================
-// Entrypoint: choose normal app or overlay-only page via ?overlay=1
-// =============================
-export default function App() {
-  const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
-  const overlayMode = params.get("overlay") === "1";
-  return overlayMode ? <OverlayPage /> : <ControllerPage />;
-}
-
-// =============================
-// Controller/search UI
-// =============================
-function ControllerPage() {
-  const [query, setQuery] = useState("");
-  const [uniqueMode, setUniqueMode] = useState("cards");
-  const [view, setView] = useState("grid");
-  const [cards, setCards] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [selected, setSelected] = useState(null);
-  const [copyMsg, setCopyMsg] = useState("");
-  /** @type {React.MutableRefObject<HTMLInputElement|null>} */
-  const urlInputRef = useRef(null);
-
-  const debounced = useDebouncedValue(query, 350);
-
-  // Restore last session
-  useEffect(() => {
-    try {
-      const q = sessionStorage.getItem("lorcast:lastQuery");
-      const results = sessionStorage.getItem("lorcast:lastResults");
-      const unique = sessionStorage.getItem("lorcast:lastUnique");
-      const v = sessionStorage.getItem("lorcast:lastView");
-      if (q) setQuery(q);
-      if (unique) setUniqueMode(unique);
-      if (v) setView(v);
-      if (results) setCards(JSON.parse(results));
-    } catch {}
-  }, []);
-
-  useEffect(() => { try { sessionStorage.setItem("lorcast:lastUnique", uniqueMode); } catch {} }, [uniqueMode]);
-  useEffect(() => { try { sessionStorage.setItem("lorcast:lastView", view); } catch {} }, [view]);
-
-  // Fetch when query changes
-  useEffect(() => {
-    const controller = new AbortController();
-    async function run() {
-      setError("");
-      if (!debounced) { setCards([]); return; }
-      setLoading(true);
-      try {
-        const url = new URL("https://api.lorcast.com/v0/cards/search");
-        url.searchParams.set("q", debounced);
-        url.searchParams.set("unique", uniqueMode);
-        const res = await fetch(url.toString(), { signal: controller.signal });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        const results = Array.isArray(data?.results) ? data.results : [];
-        setCards(results);
-        try { sessionStorage.setItem("lorcast:lastResults", JSON.stringify(results)); sessionStorage.setItem("lorcast:lastQuery", debounced); } catch {}
-      } catch (e) {
-        if (e && e.name === "AbortError") return;
-        setError((e && e.message) || "Something went wrong");
-      } finally { setLoading(false); }
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Lorcana Card Image Browser</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    body { margin: 0; background: #f8fafc; color: #0f172a; }
+    .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
+    .header h1 { margin: 0 0 6px; font-size: 26px; }
+    .muted { color: #64748b; font-size: 14px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 16px; }
+    input[type="text"], select, button, input[type="url"] {
+      padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 10px; background:#fff; box-shadow: 0 1px 0 rgba(0,0,0,0.02);
     }
-    run();
-    return () => controller.abort();
-  }, [debounced, uniqueMode]);
+    input[type="text"]{ flex: 1 1 360px; min-width: 260px; }
+    input[readonly]{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+    figure { margin: 0; background:#fff; border:1px solid #e2e8f0; border-radius: 14px; overflow: hidden; cursor: pointer; transition: box-shadow .15s; }
+    figure:hover{ box-shadow: 0 6px 16px rgba(2,6,23,0.08); }
+    figcaption { padding: 8px 10px; }
+    .title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sub { color:#64748b; font-size: 12px; }
+    .preview { position: fixed; right: 12px; bottom: 12px; background: rgba(255,255,255,.92); border:1px solid #e2e8f0; border-radius: 14px; padding: 8px; display:flex; gap:8px; align-items: center; box-shadow: 0 6px 18px rgba(2,6,23,0.12); }
+    .preview img { width: 56px; border-radius: 8px; }
+    .btn { cursor:pointer; }
+    .muted-inline { color:#64748b; font-size:12px; }
+    .error { color:#dc2626; font-weight:600; }
+    /* Overlay */
+    html.overlay, body.overlay { height:100%; background: transparent; }
+    .wrap { width:100vw; height:100vh; display:grid; place-items:center; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
 
-  // Preload first page of images
-  useEffect(() => {
-    const imgs = cards.slice(0, 60).map(c => c?.image_uris?.digital?.large || c?.image_uris?.digital?.normal).filter(Boolean);
-    imgs.forEach(src => { const img = new Image(); img.src = src; });
-  }, [cards]);
+  <!-- React / ReactDOM / Babel (no build tools required) -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
 
-  // Selection -> overlay storage
-  function selectForOverlay(card) {
-    setSelected(card);
-    const src = card?.image_uris?.digital?.large || card?.image_uris?.digital?.normal || card?.image_uris?.digital?.small || "";
-    try {
-      localStorage.setItem("lorcana:overlayImage", src);
-      localStorage.setItem("lorcana:overlayTitle", `${card.name}${card.version ? " - " + card.version : ""}`);
-    } catch {}
-  }
+  <script type="text/babel">
+    const { useEffect, useMemo, useRef, useState } = React;
 
-  // Overlay URL helpers
-  const overlayUrl = useMemo(() => buildOverlayUrl(window.location.href), []);
-
-  async function copyOverlayUrl() {
-    const text = overlayUrl;
-    setCopyMsg("");
-    try {
-      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-        await navigator.clipboard.writeText(text);
-        setCopyMsg("Copied to clipboard");
-        setTimeout(() => setCopyMsg(""), 1500);
-        return;
-      }
-      throw new Error("Clipboard API unavailable");
-    } catch (_) {
-      // Fallback: select text for manual copy
-      if (urlInputRef.current) {
-        try { urlInputRef.current.focus(); urlInputRef.current.select(); if (document.execCommand) document.execCommand("copy"); } catch {}
-      }
-      setCopyMsg("Press Ctrl+C (Cmd+C on Mac) to copy");
-      setTimeout(() => setCopyMsg(""), 3000);
+    function useDebouncedValue(value, delay = 400) {
+      const [debounced, setDebounced] = useState(value);
+      useEffect(() => { const t = setTimeout(() => setDebounced(value), delay); return () => clearTimeout(t); }, [value, delay]);
+      return debounced;
     }
-  }
 
-  return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 p-4 md:p-6">
-      <header className="max-w-6xl mx-auto mb-4 md:mb-6">
-        <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Lorcana Card Image Browser</h1>
-        <p className="text-sm md:text-base text-slate-600">
-          Type a keyword (example: <span className="font-mono">elsa</span>, <span className="font-mono">song</span>, <span className="font-mono">ink:Amethyst</span>, <span className="font-mono">rarity:Enchanted</span>). Click a card to send it to the overlay.
-        </p>
-      </header>
+    function buildOverlayUrl() {
+      const url = new URL(window.location.href);
+      url.searchParams.set('overlay', '1');
+      return url.toString();
+    }
 
-      <div className="max-w-6xl mx-auto flex flex-col gap-3 md:gap-4">
-        <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center">
-          <input
-            autoFocus
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="Search by name, type, text, ink, rarity..."
-            className="w-full px-4 py-2 rounded-2xl border border-slate-300 bg-white shadow-sm outline-none focus:ring-2 focus:ring-indigo-400"
-          />
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-slate-600">Unique:</label>
-            <select
-              value={uniqueMode}
-              onChange={e => setUniqueMode(e.target.value)}
-              className="px-3 py-2 rounded-xl border border-slate-300 bg-white shadow-sm"
-              title="cards = dedupe by gameplay object; prints = show all printings"
-            >
+    // Entrypoint chooses between controller and overlay modes
+    function App() {
+      const params = new URLSearchParams(window.location.search);
+      const overlayMode = params.get('overlay') === '1';
+      if (overlayMode) {
+        document.documentElement.classList.add('overlay');
+        document.body.classList.add('overlay');
+        return <OverlayPage />;
+      }
+      return <ControllerPage />;
+    }
+
+    // Controller/search UI
+    function ControllerPage() {
+      const [query, setQuery] = useState('');
+      const [uniqueMode, setUniqueMode] = useState('cards');
+      const [view, setView] = useState('grid');
+      const [cards, setCards] = useState([]);
+            const [loading, setLoading] = useState(false);
+      const [error, setError] = useState('');
+      const [selected, setSelected] = useState(null);
+      const [copyMsg, setCopyMsg] = useState('');
+      const urlInputRef = useRef(null);
+
+      const debounced = useDebouncedValue(query, 350);
+
+      useEffect(() => {
+        try {
+          const q = sessionStorage.getItem('lorcast:lastQuery');
+          const results = sessionStorage.getItem('lorcast:lastResults');
+          const unique = sessionStorage.getItem('lorcast:lastUnique');
+          const v = sessionStorage.getItem('lorcast:lastView');
+          if (q) setQuery(q);
+          if (unique) setUniqueMode(unique);
+          if (v) setView(v);
+          if (results) setCards(JSON.parse(results));
+        } catch {}
+      }, []);
+
+      useEffect(() => { try { sessionStorage.setItem('lorcast:lastUnique', uniqueMode); } catch {} }, [uniqueMode]);
+      useEffect(() => { try { sessionStorage.setItem('lorcast:lastView', view); } catch {} }, [view]);
+
+      useEffect(() => {
+        const controller = new AbortController();
+        async function run() {
+          setError('');
+          if (!debounced) { setCards([]); return; }
+          setLoading(true);
+          try {
+            const url = new URL('https://api.lorcast.com/v0/cards/search');
+            url.searchParams.set('q', debounced);
+            url.searchParams.set('unique', uniqueMode);
+            const res = await fetch(url.toString(), { signal: controller.signal });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json();
+            const results = Array.isArray(data && data.results) ? data.results : [];
+            setCards(results);
+            try { sessionStorage.setItem('lorcast:lastResults', JSON.stringify(results)); sessionStorage.setItem('lorcast:lastQuery', debounced); } catch {}
+          } catch (e) {
+            if (e && e.name === 'AbortError') return;
+            setError((e && e.message) || 'Something went wrong');
+          } finally { setLoading(false); }
+        }
+        run();
+        return () => controller.abort();
+      }, [debounced, uniqueMode]);
+
+      useEffect(() => {
+        const imgs = cards.slice(0,60).map(c => c && c.image_uris && c.image_uris.digital && (c.image_uris.digital.large || c.image_uris.digital.normal)).filter(Boolean);
+        imgs.forEach(src => { const img = new Image(); img.src = src; });
+      }, [cards]);
+
+      function selectForOverlay(card) {
+        setSelected(card);
+        const src = (card && card.image_uris && card.image_uris.digital && (card.image_uris.digital.large || card.image_uris.digital.normal || card.image_uris.digital.small)) || '';
+        try { localStorage.setItem('lorcana:overlayImage', src); localStorage.setItem('lorcana:overlayTitle', card.name + (card.version ? ' - ' + card.version : '')); } catch {}
+      }
+
+      const overlayUrl = useMemo(() => buildOverlayUrl(), []);
+
+      async function copyOverlayUrl() {
+        const text = overlayUrl; setCopyMsg('');
+        try {
+          if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(text);
+            setCopyMsg('Copied to clipboard'); setTimeout(() => setCopyMsg(''), 1500); return;
+          }
+          throw new Error('Clipboard API unavailable');
+        } catch (_) {
+          if (urlInputRef.current) { try { urlInputRef.current.focus(); urlInputRef.current.select(); if (document.execCommand) document.execCommand('copy'); } catch {} }
+          setCopyMsg('Press Ctrl+C (Cmd+C on Mac) to copy'); setTimeout(() => setCopyMsg(''), 3000);
+        }
+      }
+
+      return (
+        <div className="container">
+          <div className="header">
+            <h1>Lorcana Card Image Browser</h1>
+            <div className="muted">Type a keyword (e.g., <code>elsa</code>, <code>song</code>, <code>ink:Amethyst</code>, <code>rarity:Enchanted</code>). Click a card to send it to the overlay.</div>
+          </div>
+
+          <div className="row">
+            <input type="text" placeholder="Search by name, type, text, ink, rarity..." value={query} onChange={e => setQuery(e.target.value)} />
+            <label className="muted-inline">Unique:</label>
+            <select value={uniqueMode} onChange={e => setUniqueMode(e.target.value)}>
               <option value="cards">cards</option>
               <option value="prints">prints</option>
             </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-slate-600">View:</label>
-            <select value={view} onChange={e => setView(e.target.value)} className="px-3 py-2 rounded-xl border border-slate-300 bg-white shadow-sm">
+            <label className="muted-inline">View:</label>
+            <select value={view} onChange={e => setView(e.target.value)}>
               <option value="grid">grid</option>
               <option value="list">list</option>
             </select>
           </div>
-          <TestPanel />
+
+          <div className="row">
+            <label className="muted-inline">Overlay URL:</label>
+            <input ref={urlInputRef} type="url" value={overlayUrl} readOnly onFocus={e => e.currentTarget.select()} style={{flex:'1 1 auto', minWidth:'300px'}} />
+            <button className="btn" onClick={copyOverlayUrl}>Copy</button>
+            {copyMsg && <span className="muted-inline">{copyMsg}</span>}
+          </div>
+
+          {loading && <div className="muted">Searching...</div>}
+          {error && <div className="error">{error}</div>}
+
+          {!loading && !error && (view === "grid") && (
+            <div className="grid">
+              {cards.map(card => <CardTile key={card.id} card={card} onSelect={selectForOverlay} />)}
+            </div>
+          )}
+          {!loading && !error && (view === "list") && (
+            <div style={{background:"#fff", border:"1px solid #e2e8f0", borderRadius:"14px", overflow:"hidden"}}>
+              {cards.map(card => <Row key={card.id} card={card} onSelect={selectForOverlay} />)}
+            </div>
+          )}
+
+          {<TestPanel />}
+
+          {selected && <Preview card={selected} />}
         </div>
-
-        <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-3">
-          <label className="text-xs text-slate-600">Overlay URL:</label>
-          <input
-            ref={urlInputRef}
-            value={overlayUrl}
-            readOnly
-            className="flex-1 min-w-0 px-3 py-2 rounded-xl border border-slate-300 bg-white shadow-sm font-mono text-xs"
-            onFocus={e => e.currentTarget.select()}
-          />
-          <button onClick={copyOverlayUrl} className="px-3 py-2 rounded-xl border border-slate-300 bg-white shadow-sm hover:bg-slate-50">Copy</button>
-          {copyMsg && <span className="text-xs text-slate-600">{copyMsg}</span>}
-        </div>
-
-        {loading && (<div className="animate-pulse text-slate-600">Searching...</div>)}
-        {error && (<div className="text-red-600 font-medium">{error}</div>)}
-
-        {!loading && !error && (
-          view === "list" ? <ListView cards={cards} onSelect={selectForOverlay} /> : <GridView cards={cards} onSelect={selectForOverlay} />
-        )}
-
-        <footer className="pt-6 text-xs text-slate-500 space-y-1">
-          <p>Click any card tile to send its image to the overlay. In OBS, add a Browser Source pointing to the Overlay URL above. Both sources must share the same origin so localStorage events work.</p>
-          <p>Images are loaded from Lorcast image URIs and will be cached by your browser. This app does not host images; it references URLs provided by the API.</p>
-        </footer>
-      </div>
-
-      <SelectedPreview card={selected} />
-    </div>
-  );
-}
-
-function GridView({ cards, onSelect }) {
-  if (!cards || cards.length === 0) {
-    return <div className="text-slate-600">No results yet. Start typing above.</div>;
-  }
-  return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-      {cards.map(card => (
-        <CardTile key={card.id} card={card} onSelect={onSelect} />
-      ))}
-    </div>
-  );
-}
-
-function ListView({ cards, onSelect }) {
-  if (!cards || cards.length === 0) {
-    return <div className="text-slate-600">No results yet. Start typing above.</div>;
-  }
-  return (
-    <div className="divide-y divide-slate-200 rounded-xl bg-white shadow-sm border border-slate-200 overflow-hidden">
-      {cards.map(card => (
-        <Row key={card.id} card={card} onSelect={onSelect} />
-      ))}
-    </div>
-  );
-}
-
-function CardTile({ card, onSelect }) {
-  const src = card?.image_uris?.digital?.large || card?.image_uris?.digital?.normal || card?.image_uris?.digital?.small;
-  function handleActivate() { onSelect(card); }
-  function handleKey(e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } }
-  return (
-    <figure
-      className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden hover:shadow-md transition-shadow cursor-pointer focus:outline-none focus:ring-2 focus:ring-indigo-400"
-      role="button"
-      tabIndex={0}
-      aria-label={`Select ${card.name}${card.version ? " - " + card.version : ""} for overlay`}
-      onClick={handleActivate}
-      onKeyDown={handleKey}
-    >
-      {src ? (
-        <img src={src} alt={`${card.name} ${card.version || ""}`} className="w-full h-auto block" loading="lazy" />
-      ) : (
-        <div className="aspect-[146/204] w-full grid place-items-center text-slate-400">No image</div>
-      )}
-      <figcaption className="p-3">
-        <div className="font-medium leading-tight">{card.name}{card.version ? ` - ${card.version}` : ""}</div>
-        <div className="text-xs text-slate-500">{card.set?.name || "Unknown Set"} · #{card.collector_number || "?"}</div>
-      </figcaption>
-    </figure>
-  );
-}
-
-function Row({ card, onSelect }) {
-  const src = card?.image_uris?.digital?.normal || card?.image_uris?.digital?.small;
-  function handleActivate() { onSelect(card); }
-  function handleKey(e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } }
-  return (
-    <div
-      className="flex gap-3 p-3 bg-white cursor-pointer hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-      role="button"
-      tabIndex={0}
-      aria-label={`Select ${card.name}${card.version ? " - " + card.version : ""} for overlay`}
-      onClick={handleActivate}
-      onKeyDown={handleKey}
-    >
-      {src ? (
-        <img src={src} alt="" className="w-20 h-auto rounded-lg border border-slate-200" loading="lazy" />
-      ) : (
-        <div className="w-20 aspect-[146/204] rounded-lg bg-slate-100 grid place-items-center text-slate-400">No image</div>
-      )}
-      <div className="flex-1 min-w-0">
-        <div className="font-medium leading-tight truncate">{card.name}{card.version ? ` - ${card.version}` : ""}</div>
-        <div className="text-xs text-slate-500">{card.set?.name || "Unknown Set"} · #{card.collector_number || "?"}</div>
-        {card.text && <div className="mt-1 text-xs text-slate-700 whitespace-pre-wrap">{card.text}</div>}
-      </div>
-    </div>
-  );
-}
-
-function SelectedPreview({ card }) {
-  if (!card) return null;
-  const src = card?.image_uris?.digital?.large || card?.image_uris?.digital?.normal || card?.image_uris?.digital?.small;
-  return (
-    <div className="fixed bottom-3 right-3 bg-white/90 backdrop-blur rounded-2xl shadow-lg border border-slate-200 p-2 flex items-center gap-2">
-      {src && <img src={src} alt="preview" className="w-14 h-auto rounded-lg" />}
-      <div className="text-xs max-w-[220px]">
-        <div className="font-medium truncate">{card.name}{card.version ? ` - ${card.version}` : ""}</div>
-        <div className="text-slate-500 truncate">Sent to overlay</div>
-      </div>
-    </div>
-  );
-}
-
-// =============================
-// Overlay window/page
-// =============================
-function OverlayPage() {
-  const params = new URLSearchParams(window.location.search);
-  const fit = params.get("fit") || "contain"; // contain or cover
-  const bg = params.get("bg") || "transparent"; // transparent, black, white, hex
-
-  const [src, setSrc] = useState("");
-  const [title, setTitle] = useState("");
-
-  // Initial read
-  useEffect(() => {
-    if (bg !== "transparent") document.body.style.background = bg;
-    try {
-      setSrc(localStorage.getItem("lorcana:overlayImage") || "");
-      setTitle(localStorage.getItem("lorcana:overlayTitle") || "");
-    } catch {}
-  }, [bg]);
-
-  // Live updates via storage events
-  useEffect(() => {
-    function onStorage(e) {
-      if (e.key === "lorcana:overlayImage") setSrc(e.newValue || "");
-      if (e.key === "lorcana:overlayTitle") setTitle(e.newValue || "");
+      );
     }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
 
-  const style = fit === "cover"
-    ? { width: "100vw", height: "100vh", objectFit: "cover" }
-    : { maxWidth: "100vw", maxHeight: "100vh", objectFit: "contain" };
+    function CardTile({ card, onSelect }) {
+      const src = (card && card.image_uris && card.image_uris.digital && (card.image_uris.digital.large || card.image_uris.digital.normal || card.image_uris.digital.small)) || null;
+      const onKey = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } }
+      return (
+        <figure role="button" tabIndex={0} aria-label={"Select " + card.name + (card.version ? " - " + card.version : "") + " for overlay"} onClick={() => onSelect(card)} onKeyDown={onKey}>
+          {src ? <img src={src} alt={(card.name || "") + " " + (card.version || "")} style={{width:"100%", display:"block"}} loading="lazy" /> : <div style={{aspectRatio:"146/204", display:"grid", placeItems:"center", color:"#94a3b8"}}>No image</div>}
+          <figcaption>
+            <div className="title">{card.name}{card.version ? " - " + card.version : ""}</div>
+            <div className="sub">{(card.set && card.set.name) || "Unknown Set"} &middot; #{card.collector_number || "?"}</div>
+          </figcaption>
+        </figure>
+      );
+    }
 
-  return (
-    <div className="w-screen h-screen grid place-items-center" style={{ background: bg === "transparent" ? "transparent" : bg }}>
-      {src ? (
-        <img src={src} alt={title} style={style} />
-      ) : (
-        <div className="text-slate-400">No selection yet. Select a card in the controller.</div>
-      )}
-    </div>
-  );
-}
+    function Row({ card, onSelect }) {
+      const src = (card && card.image_uris && card.image_uris.digital && (card.image_uris.digital.normal || card.image_uris.digital.small)) || null;
+      const onKey = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } }
+      return (
+        <div role="button" tabIndex={0} onClick={() => onSelect(card)} onKeyDown={onKey} style={{display:"flex", gap:"10px", padding:"10px", alignItems:"center", cursor:"pointer"}}>
+          {src ? <img src={src} alt="" style={{width:"80px", borderRadius:"8px", border:"1px solid #e2e8f0"}} loading="lazy" /> : <div style={{width:"80px", aspectRatio:"146/204", background:"#f1f5f9", borderRadius:"8px"}}/>}
+          <div style={{minWidth:0}}>
+            <div className="title" style={{whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{card.name}{card.version ? " - " + card.version : ""}</div>
+            <div className="sub">{(card.set && card.set.name) || "Unknown Set"} &middot; #{card.collector_number || "?"}</div>
+            {card.text && <div className="muted" style={{marginTop:"4px", whiteSpace:"pre-wrap"}}>{card.text}</div>}
+          </div>
+        </div>
+      );
+    }
 
-// =============================
-// Minimal Test Runner
-// =============================
-function TestPanel() {
-  const [status, setStatus] = useState("idle");
-  const [results, setResults] = useState([]);
+    function Preview({ card }) {
+      const src = (card && card.image_uris && card.image_uris.digital && (card.image_uris.digital.large || card.image_uris.digital.normal || card.image_uris.digital.small)) || null;
+      return (
+        <div className="preview">
+          {src && <img src={src} alt="preview" />}
+          <div>
+            <div className="title" style={{maxWidth:"220px"}}>{card.name}{card.version ? " - " + card.version : ""}</div>
+            <div className="sub">Sent to overlay</div>
+          </div>
+        </div>
+      );
+    }
 
-  async function runTests() {
-    setStatus("running");
-    const tests = [
-      { name: "Basic name search (elsa)", query: "elsa", validate: d => Array.isArray(d?.results) && d.results.length > 0 },
-      { name: "Type filter (type:Action)", query: "type:Action", validate: d => Array.isArray(d?.results) && d.results.length > 0 },
-      { name: "Ink filter (ink:Amethyst)", query: "ink:Amethyst", validate: d => Array.isArray(d?.results) && d.results.length > 0 },
-      { name: "Keyword in text (Shift)", query: "Shift", validate: d => Array.isArray(d?.results) && d.results.length > 0 },
-      { name: "Overlay URL builder attaches overlay=1", query: "__overlay_url_test__", validate: () => buildOverlayUrl("https://example.com/app").includes("overlay=1") },
-    ];
+    // Overlay-only page
+    function OverlayPage() {
+      const params = new URLSearchParams(location.search);
+      const fit = params.get('fit') || 'contain';
+      const bg = params.get('bg') || 'transparent';
 
-    const out = [];
-    for (const t of tests) {
-      try {
-        if (t.query === "__overlay_url_test__") {
-          const ok = t.validate();
-          out.push({ name: t.name, ok, details: ok ? "pass" : "fail" });
-          continue;
+      useEffect(() => { if (bg !== 'transparent') document.body.style.background = bg; }, [bg]);
+
+      const [src, setSrc] = useState('');
+      const [title, setTitle] = useState('');
+
+      useEffect(() => { try { setSrc(localStorage.getItem('lorcana:overlayImage') || ''); setTitle(localStorage.getItem('lorcana:overlayTitle') || ''); } catch {} }, []);
+      useEffect(() => {
+        function onStorage(e) { if (e.key === 'lorcana:overlayImage') setSrc(e.newValue || ''); if (e.key === 'lorcana:overlayTitle') setTitle(e.newValue || ''); }
+        window.addEventListener('storage', onStorage); return () => window.removeEventListener('storage', onStorage);
+      }, []);
+
+      const styleImg = fit === 'cover'
+        ? { width:'100%', height:'100%', objectFit:'cover' }
+        : { maxWidth:'100%', maxHeight:'100%', objectFit:'contain' };
+
+      return (
+        <div className="wrap">
+          {src ? <img src={src} alt={title} style={styleImg} /> : <div style={{ color:'#94a3b8' }}>No selection yet. Select a card in the controller.</div>}
+        </div>
+      );
+    }
+
+    // Minimal test runner
+    function TestPanel() {
+      const [status, setStatus] = useState('idle');
+      const [results, setResults] = useState([]);
+
+      async function runTests() {
+        setStatus('running');
+        const tests = [
+          { name: 'Basic name search (elsa)', query: 'elsa', validate: d => Array.isArray(d && d.results) && d.results.length > 0 },
+          { name: 'Type filter (type:Action)', query: 'type:Action', validate: d => Array.isArray(d && d.results) && d.results.length > 0 },
+          { name: 'Ink filter (ink:Amethyst)', query: 'ink:Amethyst', validate: d => Array.isArray(d && d.results) && d.results.length > 0 },
+          { name: 'Keyword in text (Shift)', query: 'Shift', validate: d => Array.isArray(d && d.results) && d.results.length > 0 },
+          { name: 'Overlay URL builder attaches overlay=1', query: '__overlay_url_test__', validate: () => buildOverlayUrl().includes('overlay=1') },
+        ];
+
+        const out = [];
+        for (const t of tests) {
+          try {
+            if (t.query === '__overlay_url_test__') {
+              const ok = t.validate();
+              out.push({ name: t.name, ok, details: ok ? 'pass' : 'fail' });
+              continue;
+            }
+            const url = new URL('https://api.lorcast.com/v0/cards/search');
+            url.searchParams.set('q', t.query); url.searchParams.set('unique', 'cards');
+            const res = await fetch(url.toString()); if (!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json(); const ok = t.validate(data);
+            out.push({ name: t.name, ok, details: ok ? 'pass' : ('fail: got ' + (Array.isArray(data && data.results) ? data.results.length : 'no') + ' results') });
+          } catch (e) {
+            out.push({ name: t.name, ok: false, details: (e && e.message) || 'error' });
+          }
         }
-        const url = new URL("https://api.lorcast.com/v0/cards/search");
-        url.searchParams.set("q", t.query);
-        url.searchParams.set("unique", "cards");
-        const res = await fetch(url.toString());
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        const ok = t.validate(data);
-        out.push({ name: t.name, ok, details: ok ? "pass" : `fail: got ${Array.isArray(data?.results) ? data.results.length : "no"} results` });
-      } catch (e) {
-        out.push({ name: t.name, ok: false, details: (e && e.message) || "error" });
+        setResults(out); setStatus('done');
       }
+
+      return (
+        <div className="row">
+          <button className="btn" onClick={runTests}>Run tests</button>
+          {status === 'running' && <span className="muted-inline">Running...</span>}
+          {status === 'done' && <TestResults results={results} />}
+        </div>
+      );
     }
-    setResults(out);
-    setStatus("done");
-  }
 
-  return (
-    <div className="flex items-center gap-2">
-      <button onClick={runTests} className="px-3 py-2 rounded-xl border border-slate-300 bg-white shadow-sm hover:bg-slate-50">Run tests</button>
-      {status === "running" && <span className="text-xs text-slate-600">Running...</span>}
-      {status === "done" && <TestResults results={results} />}
-    </div>
-  );
-}
+    function TestResults({ results }) {
+      return (
+        <div className="muted" style={{fontSize:'12px'}}>
+          {results.map((r, i) => <div key={i} style={{marginTop:'4px', color: r.ok ? '#15803d' : '#b91c1c'}}>[{r.ok ? 'PASS' : 'FAIL'}] {r.name} - {r.details}</div>)}
+        </div>
+      );
+    }
 
-function TestResults({ results }) {
-  return (
-    <div className="text-xs text-slate-700">
-      {results.map((r, i) => (
-        <div key={i} className={"mt-1 " + (r.ok ? "text-green-700" : "text-red-700")}>[{r.ok ? "PASS" : "FAIL"}] {r.name} - {r.details}</div>
-      ))}
-    </div>
-  );
-}
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
