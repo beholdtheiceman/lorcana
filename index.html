@@ -37,10 +37,37 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+  <!-- Firebase (Compat for simple inline use) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 
   <!-- React preset only; code avoids optional chaining/nullish -->
   <script type="text/babel" data-presets="react">
     const { useEffect, useMemo, useRef, useState } = React;
+
+    // ======= Firebase config (from your project) =======
+    var FIREBASE_CONFIG = {
+      apiKey: "AIzaSyDkXEhCduyXpXRUqbUFIuFIUHWiQbVZ9Kw",
+      authDomain: "lorcana-efc7a.firebaseapp.com",
+      databaseURL: "https://lorcana-efc7a-default-rtdb.firebaseio.com",
+      projectId: "lorcana-efc7a",
+      storageBucket: "lorcana-efc7a.firebasestorage.app",
+      messagingSenderId: "634624437266",
+      appId: "1:634624437266:web:8c8c4ad2d461e3d7567ccb",
+      measurementId: "G-MBJ0ZJFR2W"
+    };
+    // Channel id so you can run multiple overlays:
+    var DEFAULT_CHANNEL = "default";
+    // ===================================================
+
+    function initFirebase() {
+      try {
+        var app = firebase.initializeApp(FIREBASE_CONFIG);
+        return firebase.database(app);
+      } catch (e) {
+        try { return firebase.database(); } catch (e2) { return null; }
+      }
+    }
 
     function useDebouncedValue(value, delay) {
       if (delay === void 0) delay = 400;
@@ -52,9 +79,10 @@
       return debounced;
     }
 
-    function buildOverlayUrl() {
+    function buildOverlayUrl(channel) {
       const url = new URL(window.location.href);
       url.searchParams.set('overlay', '1');
+      if (channel) url.searchParams.set('c', channel);
       return url.toString();
     }
 
@@ -78,7 +106,9 @@
       const [error, setError] = useState('');
       const [selected, setSelected] = useState(null);
       const [copyMsg, setCopyMsg] = useState('');
+      const [channel, setChannel] = useState(DEFAULT_CHANNEL);
       const urlInputRef = useRef(null);
+      const db = useMemo(initFirebase, []);
 
       const debounced = useDebouncedValue(query, 350);
 
@@ -88,15 +118,18 @@
           const results = sessionStorage.getItem('lorcast:lastResults');
           const unique = sessionStorage.getItem('lorcast:lastUnique');
           const v = sessionStorage.getItem('lorcast:lastView');
+          const ch = localStorage.getItem('lorcana:channel');
           if (q) setQuery(q);
           if (unique) setUniqueMode(unique);
           if (v) setView(v);
           if (results) setCards(JSON.parse(results));
+          if (ch) setChannel(ch);
         } catch (e) {}
       }, []);
 
       useEffect(function () { try { sessionStorage.setItem('lorcast:lastUnique', uniqueMode); } catch (e) {} }, [uniqueMode]);
       useEffect(function () { try { sessionStorage.setItem('lorcast:lastView', view); } catch (e) {} }, [view]);
+      useEffect(function () { try { localStorage.setItem('lorcana:channel', channel); } catch (e) {} }, [channel]);
 
       useEffect(function () {
         const controller = new AbortController();
@@ -131,8 +164,7 @@
         imgs.forEach(function (src) { var img = new Image(); img.src = src; });
       }, [cards]);
 
-      function selectForOverlay(card) {
-        setSelected(card);
+      function pushSelectionToLocal(card) {
         var dig = card && card.image_uris && card.image_uris.digital;
         var src = (dig && (dig.large || dig.normal || dig.small)) || '';
         try {
@@ -142,7 +174,23 @@
         } catch (e) {}
       }
 
-      const overlayUrl = useMemo(function () { return buildOverlayUrl(); }, []);
+      async function pushSelectionToFirebase(card) {
+        if (!db) return;
+        try {
+          var dig = card && card.image_uris && card.image_uris.digital;
+          var src = (dig && (dig.large || dig.normal || dig.small)) || '';
+          var ref = db.ref('/lorcana/' + channel);
+          await ref.set({ image: src, title: card.name + (card.version ? ' - ' + card.version : ''), updatedAt: Date.now() });
+        } catch (e) { console.error(e); }
+      }
+
+      function selectForOverlay(card) {
+        setSelected(card);
+        pushSelectionToLocal(card);
+        pushSelectionToFirebase(card);
+      }
+
+      const overlayUrl = useMemo(function () { return buildOverlayUrl(channel); }, [channel]);
 
       async function copyOverlayUrl() {
         const text = overlayUrl; setCopyMsg('');
@@ -179,6 +227,8 @@
               <option value="grid">grid</option>
               <option value="list">list</option>
             </select>
+            <label className="muted-inline">Channel:</label>
+            <input type="text" value={channel} onChange={function(e){ setChannel(e.target.value.trim() || DEFAULT_CHANNEL); }} style={{width:'140px'}} />
           </div>
 
           <div className="row">
@@ -186,6 +236,7 @@
             <input ref={urlInputRef} type="url" value={overlayUrl} readOnly onFocus={function (e) { e.currentTarget.select(); }} style={{flex:'1 1 auto', minWidth:'300px'}} />
             <button className="btn" onClick={copyOverlayUrl}>Copy</button>
             {copyMsg && <span className="muted-inline">{copyMsg}</span>}
+            {!db && <span className="muted-inline"> (Firebase not available)</span>}
           </div>
 
           {loading && <div className="muted">Searching...</div>}
@@ -196,11 +247,8 @@
           )}
           {!loading && !error && view === 'list' && (
             <div style={{background:'#fff', border:'1px solid #e2e8f0', borderRadius:'14px', overflow:'hidden'}}>
-              {cards.map(function (card) { return <Row key={card.id} card={card} onSelect={selectForOverlay} />; })}
-            </div>
+              {cards.map(function (card) { return <Row key={card.id} card={card} onSelect={selectForOverlay} />; })}</div>
           )}
-
-          {<TestPanel />}
 
           {selected && <Preview card={selected} />}
         </div>
@@ -256,14 +304,16 @@
       const params = new URLSearchParams(location.search);
       const fit = params.get('fit') || 'contain';
       const bg = params.get('bg') || 'transparent';
+      const channel = params.get('c') || DEFAULT_CHANNEL;
 
       useEffect(function () { if (bg !== 'transparent') document.body.style.background = bg; }, [bg]);
 
       const [src, setSrc] = useState('');
       const [title, setTitle] = useState('');
       const [stamp, setStamp] = useState('');
+      const db = useMemo(initFirebase, []);
 
-      // Initial read
+      // Initial local read
       useEffect(function () {
         try {
           setSrc(localStorage.getItem('lorcana:overlayImage') || '');
@@ -272,7 +322,22 @@
         } catch (e) {}
       }, []);
 
-      // POLL localStorage every second so OBS (separate process) sees updates
+      // Network sync via Firebase (if configured)
+      useEffect(function () {
+        if (!db) return;
+        var ref = db.ref('/lorcana/' + channel);
+        var unsub = ref.on('value', function (snap) {
+          var v = snap.val() || {};
+          if (v && v.updatedAt && String(v.updatedAt) !== String(stamp)) {
+            setStamp(String(v.updatedAt));
+            setSrc(v.image || '');
+            setTitle(v.title || '');
+          }
+        });
+        return function () { try { ref.off('value', unsub); } catch (e) {} };
+      }, [db, channel, stamp]);
+
+      // Local polling fallback (for OBS separate storage)
       useEffect(function () {
         var t = setInterval(function () {
           try {
@@ -294,58 +359,6 @@
       return (
         <div className="wrap">
           {src ? <img src={src} alt={title} style={styleImg} /> : <div style={{ color:'#94a3b8' }}>No selection yet. Select a card in the controller.</div>}
-        </div>
-      );
-    }
-
-    function TestPanel() {
-      const [status, setStatus] = useState('idle');
-      const [results, setResults] = useState([]);
-
-      async function runTests() {
-        setStatus('running');
-        const tests = [
-          { name: 'Basic name search (elsa)', query: 'elsa', validate: function (d) { return d && Array.isArray(d.results) && d.results.length > 0; } },
-          { name: 'Type filter (type:Action)', query: 'type:Action', validate: function (d) { return d && Array.isArray(d.results) && d.results.length > 0; } },
-          { name: 'Ink filter (ink:Amethyst)', query: 'ink:Amethyst', validate: function (d) { return d && Array.isArray(d.results) && d.results.length > 0; } },
-          { name: 'Keyword in text (Shift)', query: 'Shift', validate: function (d) { return d && Array.isArray(d.results) && d.results.length > 0; } },
-          { name: 'Overlay URL builder attaches overlay=1', query: '__overlay_url_test__', validate: function () { return buildOverlayUrl().indexOf('overlay=1') !== -1; } },
-        ];
-
-        const out = [];
-        for (var i=0; i<tests.length; i++) {
-          var t = tests[i];
-          try {
-            if (t.query === '__overlay_url_test__') {
-              var ok = t.validate();
-              out.push({ name: t.name, ok: ok, details: ok ? 'pass' : 'fail' });
-              continue;
-            }
-            const url = new URL('https://api.lorcast.com/v0/cards/search');
-            url.searchParams.set('q', t.query); url.searchParams.set('unique', 'cards');
-            const res = await fetch(url.toString()); if (!res.ok) throw new Error('HTTP ' + res.status);
-            const data = await res.json(); var ok2 = t.validate(data);
-            out.push({ name: t.name, ok: ok2, details: ok2 ? 'pass' : ('fail: got ' + (data && Array.isArray(data.results) ? data.results.length : 'no') + ' results') });
-          } catch (e) {
-            out.push({ name: t.name, ok: false, details: (e && e.message) || 'error' });
-          }
-        }
-        setResults(out); setStatus('done');
-      }
-
-      return (
-        <div className="row">
-          <button className="btn" onClick={runTests}>Run tests</button>
-          {status === 'running' && <span className="muted-inline">Running...</span>}
-          {status === 'done' && <TestResults results={results} />}
-        </div>
-      );
-    }
-
-    function TestResults({ results }) {
-      return (
-        <div className="muted" style={{fontSize:'12px'}}>
-          {results.map(function (r, i) { return <div key={i} style={{marginTop:'4px', color: r.ok ? '#15803d' : '#b91c1c'}}>[{r.ok ? 'PASS' : 'FAIL'}] {r.name} - {r.details}</div>; })}
         </div>
       );
     }
