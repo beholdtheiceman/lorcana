@@ -22,6 +22,7 @@
     figcaption { padding: 8px 10px; }
     .title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sub { color:#64748b; font-size: 12px; }
+    .badge { display:inline-block; font-size: 10px; color:#334155; background:#e2e8f0; padding:2px 6px; border-radius:999px; margin-left:6px; vertical-align: middle; }
     .preview { position: fixed; right: 12px; bottom: 12px; background: rgba(255,255,255,.92); border:1px solid #e2e8f0; border-radius: 14px; padding: 8px; display:flex; gap:8px; align-items: center; box-shadow: 0 6px 18px rgba(2,6,23,0.12); }
     .preview img { width: 56px; border-radius: 8px; }
     .btn { cursor:pointer; }
@@ -43,7 +44,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 
-  <!-- React preset only -->
+  <!-- React preset only; no optional chaining/nullish to avoid plugins -->
   <script type="text/babel" data-presets="react">
     const { useEffect, useMemo, useRef, useState } = React;
 
@@ -87,6 +88,87 @@
       return url.toString();
     }
 
+    // ---------- Data fetching (Lorcana.gg primary; Lorcast fallback) ----------
+    function mapFromLorcanaGG(item) {
+      if (!item) return null;
+      var img = item.image || (item.imageUrls && (item.imageUrls.full || item.imageUrls.large || item.imageUrls.normal));
+      var setName = item.set || item.set_name || item.setName || (item.sets && item.sets[0]) || '';
+      var number = item.number || item.collectorNumber || item.collector_number || item.no || '';
+      return {
+        id: (item.id || (item.slug || (item.name + "-" + number + "-" + setName))).toString(),
+        name: item.name || "",
+        set: setName,
+        number: number,
+        image_url: img || "",
+        _source: "Lorcana.gg",
+        _raw: item
+      };
+    }
+
+    function mapFromLorcast(item) {
+      if (!item) return null;
+      var dig = item.image_uris && item.image_uris.digital;
+      var img = (dig && (dig.large || dig.normal || dig.small)) || '';
+      var setName = (item.set && item.set.name) || '';
+      var number = item.collector_number || item.number || '';
+      return {
+        id: (item.id || (item.name + "-" + number + "-" + setName)).toString(),
+        name: item.name || "",
+        set: setName,
+        number: number,
+        image_url: img,
+        _source: "Lorcast",
+        _raw: item
+      };
+    }
+
+    async function fetchFromLorcanaGG(query) {
+      try {
+        var url = new URL('https://lorcana.gg/api/cards');
+        if (query) url.searchParams.set('search', query);
+        var res = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var data = await res.json();
+        var arr = Array.isArray(data) ? data : (Array.isArray(data && data.cards) ? data.cards : []);
+        var mapped = [];
+        for (var i=0;i<arr.length;i++) {
+          var m = mapFromLorcanaGG(arr[i]);
+          if (m && m.image_url) mapped.push(m);
+        }
+        return mapped;
+      } catch (e) {
+        return [];
+      }
+    }
+
+    async function fetchFromLorcast(query, uniqueMode) {
+      try {
+        var url = new URL('https://api.lorcast.com/v0/cards/search');
+        url.searchParams.set('q', query || '');
+        if (uniqueMode) url.searchParams.set('unique', uniqueMode);
+        var res = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var data = await res.json();
+        var arr = Array.isArray(data && data.results) ? data.results : [];
+        var mapped = [];
+        for (var i=0;i<arr.length;i++) {
+          var m = mapFromLorcast(arr[i]);
+          if (m && m.image_url) mapped.push(m);
+        }
+        return mapped;
+      } catch (e) {
+        return [];
+      }
+    }
+
+    async function searchCards(query, uniqueMode) {
+      if (!query) return [];
+      var primary = await fetchFromLorcanaGG(query);
+      if (primary && primary.length) return primary;
+      var fallback = await fetchFromLorcast(query, uniqueMode);
+      return fallback;
+    }
+
     function App() {
       const params = new URLSearchParams(window.location.search);
       const overlayMode = params.get('overlay') === '1';
@@ -100,7 +182,7 @@
 
     function ControllerPage() {
       const [query, setQuery] = useState('');
-      const [uniqueMode, setUniqueMode] = useState('cards');
+      const [uniqueMode, setUniqueMode] = useState('cards'); // used by Lorcast fallback only
       const [view, setView] = useState('grid');
       const [cards, setCards] = useState([]);
       const [loading, setLoading] = useState(false);
@@ -139,13 +221,7 @@
           if (!debounced) { setCards([]); return; }
           setLoading(true);
           try {
-            const url = new URL('https://api.lorcast.com/v0/cards/search');
-            url.searchParams.set('q', debounced);
-            url.searchParams.set('unique', uniqueMode);
-            const res = await fetch(url.toString(), { signal: controller.signal });
-            if (!res.ok) throw new Error('HTTP ' + res.status);
-            const data = await res.json();
-            const results = (data && Array.isArray(data.results)) ? data.results : [];
+            var results = await searchCards(debounced, uniqueMode);
             setCards(results);
             try { sessionStorage.setItem('lorcast:lastResults', JSON.stringify(results)); sessionStorage.setItem('lorcast:lastQuery', debounced); } catch (e) {}
           } catch (e) {
@@ -158,22 +234,16 @@
       }, [debounced, uniqueMode]);
 
       useEffect(function () {
-        const imgs = cards.slice(0,60).map(function (c) {
-          var dig = c && c.image_uris && c.image_uris.digital;
-          return dig && (dig.large || dig.normal);
-        }).filter(Boolean);
+        const imgs = cards.slice(0,60).map(function (c) { return c && c.image_url; }).filter(Boolean);
         imgs.forEach(function (src) { var img = new Image(); img.src = src; });
       }, [cards]);
 
       function pushSelectionToLocal(card) {
-        var dig = card && card.image_uris && card.image_uris.digital;
-        var src = (dig && (dig.large || dig.normal || dig.small)) || '';
-        var payload = { image: src, title: card.name + (card.version ? ' - ' + card.version : ''), updatedAt: Date.now() };
+        var src = (card && card.image_url) || '';
+        var payload = { image: src, title: card.name + (card.number ? ' #' + card.number : '') + (card.set ? ' · ' + card.set : ''), updatedAt: Date.now() };
         try {
-          // Write payload first (atomic-ish), then signal with timestamp key
           localStorage.setItem('lorcana:overlayPayload', JSON.stringify(payload));
           localStorage.setItem('lorcana:overlayUpdatedAt', String(payload.updatedAt));
-          // Legacy keys kept for backward compatibility
           localStorage.setItem('lorcana:overlayImage', src);
           localStorage.setItem('lorcana:overlayTitle', payload.title);
         } catch (e) {}
@@ -182,10 +252,9 @@
       async function pushSelectionToFirebase(card) {
         if (!db) return;
         try {
-          var dig = card && card.image_uris && card.image_uris.digital;
-          var src = (dig && (dig.large || dig.normal || dig.small)) || '';
+          var src = (card && card.image_url) || '';
           var ref = db.ref('/lorcana/' + channel);
-          await ref.set({ image: src, title: card.name + (card.version ? ' - ' + card.version : ''), updatedAt: Date.now() });
+          await ref.set({ image: src, title: card.name + (card.number ? ' #' + card.number : '') + (card.set ? ' · ' + card.set : ''), updatedAt: Date.now() });
         } catch (e) { console.error(e); }
       }
 
@@ -217,12 +286,12 @@
         <div className="container">
           <div className="header">
             <h1>Lorcana Card Image Browser</h1>
-            <div className="muted">Type a keyword (e.g., <code>elsa</code>, <code>song</code>, <code>ink:Amethyst</code>, <code>rarity:Enchanted</code>). Click a card to send it to the overlay.</div>
+            <div className="muted">Type a keyword (e.g., <code>elsa</code>, <code>song</code>). Cards show the data source tag.</div>
           </div>
 
           <div className="row">
             <input type="text" placeholder="Search by name, type, text, ink, rarity..." value={query} onChange={function (e) { setQuery(e.target.value); }} />
-            <label className="muted-inline">Unique:</label>
+            <label className="muted-inline">Unique (fallback only):</label>
             <select value={uniqueMode} onChange={function (e) { setUniqueMode(e.target.value); }}>
               <option value="cards">cards</option>
               <option value="prints">prints</option>
@@ -261,44 +330,40 @@
     }
 
     function CardTile({ card, onSelect }) {
-      var dig = card && card.image_uris && card.image_uris.digital;
-      var src = (dig && (dig.large || dig.normal || dig.small)) || null;
+      var src = card && card.image_url;
       const onKey = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } };
       return (
-        <figure role="button" tabIndex={0} aria-label={"Select " + card.name + (card.version ? " - " + card.version : "") + " for overlay"} onClick={function () { onSelect(card); }} onKeyDown={onKey}>
-          {src ? <img src={src} alt={(card.name || "") + " " + (card.version || "")} style={{width:"100%", display:"block"}} loading="lazy" /> : <div style={{aspectRatio:"146/204", display:"grid", placeItems:"center", color:"#94a3b8"}}>No image</div>}
+        <figure role="button" tabIndex={0} aria-label={"Select " + card.name + " for overlay"} onClick={function () { onSelect(card); }} onKeyDown={onKey}>
+          {src ? <img src={src} alt={(card.name || "")} style={{width:"100%", display:"block"}} loading="lazy" /> : <div style={{aspectRatio:"146/204", display:"grid", placeItems:"center", color:"#94a3b8"}}>No image</div>}
           <figcaption>
-            <div className="title">{card.name}{card.version ? " - " + card.version : ""}</div>
-            <div className="sub">{(card.set && card.set.name) || "Unknown Set"} &middot; #{card.collector_number || "?"}</div>
+            <div className="title">{card.name} {card._source && <span className="badge">{card._source}</span>}</div>
+            <div className="sub">{(card.set || "Unknown Set")} &middot; #{card.number || "?"}</div>
           </figcaption>
         </figure>
       );
     }
 
     function Row({ card, onSelect }) {
-      var dig = card && card.image_uris && card.image_uris.digital;
-      var src = (dig && (dig.normal || dig.small)) || null;
+      var src = card && card.image_url;
       const onKey = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } };
       return (
         <div role="button" tabIndex={0} onClick={function () { onSelect(card); }} onKeyDown={onKey} style={{display:"flex", gap:"10px", padding:"10px", alignItems:"center", cursor:"pointer"}}>
           {src ? <img src={src} alt="" style={{width:"80px", borderRadius:"8px", border:"1px solid #e2e8f0"}} loading="lazy" /> : <div style={{width:"80px", aspectRatio:"146/204", background:"#f1f5f9", borderRadius:"8px"}}/>}
           <div style={{minWidth:0}}>
-            <div className="title" style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>{card.name}{card.version ? " - " + card.version : ""}</div>
-            <div className="sub">{(card.set && card.set.name) || "Unknown Set"} &middot; #{card.collector_number || "?"}</div>
-            {card.text && <div className="muted" style={{marginTop:"4px", whiteSpace:"pre-wrap"}}>{card.text}</div>}
+            <div className="title" style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>{card.name} {card._source && <span className="badge">{card._source}</span>}</div>
+            <div className="sub">{(card.set || "Unknown Set")} &middot; #{card.number || "?"}</div>
           </div>
         </div>
       );
     }
 
     function Preview({ card }) {
-      var dig = card && card.image_uris && card.image_uris.digital;
-      var src = (dig && (dig.large || dig.normal || dig.small)) || null;
+      var src = card && card.image_url;
       return (
         <div className="preview">
           {src && <img src={src} alt="preview" />}
           <div>
-            <div className="title" style={{maxWidth:"220px"}}>{card.name}{card.version ? " - " + card.version : ""}</div>
+            <div className="title" style={{maxWidth:"220px"}}>{card.name}</div>
             <div className="sub">Sent to overlay</div>
           </div>
         </div>
@@ -336,7 +401,6 @@
             setSrc(newSrc);
             setTitle(newTitle);
             setLoaded(false);
-            // next tick add loaded class
             setTimeout(function(){ setLoaded(true); }, 0);
           }
         });
@@ -352,7 +416,6 @@
             setStamp(String(payload.updatedAt || ''));
             applyPayload(payload);
           } else {
-            // Legacy keys
             var img = localStorage.getItem('lorcana:overlayImage') || '';
             var ttl = localStorage.getItem('lorcana:overlayTitle') || '';
             var st = localStorage.getItem('lorcana:overlayUpdatedAt') || '';
@@ -361,7 +424,7 @@
         } catch (e) {}
       }, []);
 
-      // Network sync via Firebase (if configured)
+      // Firebase realtime
       useEffect(function () {
         if (!db) return;
         var ref = db.ref('/lorcana/' + channel);
@@ -375,7 +438,7 @@
         return function () { try { ref.off('value', unsub); } catch (e) {} };
       }, [db, channel, stamp]);
 
-      // Local polling fallback (for OBS separate storage)
+      // Local polling fallback
       useEffect(function () {
         var t = setInterval(function () {
           try {
