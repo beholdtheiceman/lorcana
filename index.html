@@ -1,1625 +1,476 @@
-// app.jsx
-// ============================================================================
-// Lorcana Deck Builder - Monolithic App File (~1500 lines)
-// Target: Restore "full" single-file app with all features and use Lorcast for images
-// Author: ChatGPT (GPT-5 Thinking)
-// Notes:
-//   - This is a single-file React app designed to drop into an existing Vite/CRA
-//     project as src/app.jsx (or App.jsx) and render the full experience.
-//   - It includes: search, filters, sort, deck panel, stats, curve chart, cost
-//     breakdowns, ink color filters, rarity filters, set filters, text search,
-//     type filters, advanced rules for deck validation, import/export (JSON +
-//     Dreamborn string flavor), printable deck sheet, image preloading, keyboard
-//     shortcuts, optimistic caching, error toasts, and more.
-//   - Image source: Lorcast (configurable & robust URL resolution).
-//   - Card data: expected from your existing data pipeline; fetch adapter is
-//     included with fallback options. You can point it to your API/JSON.
-//   - Styling assumes TailwindCSS. If you don't use Tailwind, replace classNames
-//     with your CSS || strip classes.
-// ============================================================================
-
-// React & ecosystem -----------------------------------------------------------
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-  Fragment,
-  createContext,
-  useContext,
-} from "react";
-
-// If recharts is available in your project; it's optional. Remove if not used.
-import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-} from "recharts";
-
-// Icons (lucide-react) - optional; replace with your icon lib || inline SVGs
-// import { Search, Filter, Settings, X, Download, Upload } from "lucide-react";
-
-// -----------------------------------------------------------------------------
-// Configuration
-// -----------------------------------------------------------------------------
-// Lorcast configuration: tweak if your endpoints/CDN differ.
-const LORCAST_CONFIG = {
-  // The correct base URL
-  API_BASE: "https://api.lorcast.com/v0",
-};
-const APP_VERSION = "1.0.1-lorcast-monolith+api";
-
-// Lorcast configuration: tweak if your endpoints/CDN differ.
-// We intentionally implement a robust resolver that tries multiple URL shapes
-// commonly used by Lorcast mirrors/CDNs. You can tailor this as needed.
-
-// Fallback images (local || remote). Replace with your assets if desired.
-// Simple fallback for when Lorcast API has no image
-const FALLBACK_IMG =
-  "data:image/svg+xml;utf8," +
-  encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="420">
-      <rect width="100%" height="100%" fill="#111"/>
-      <text x="50%" y="50%" fill="#999" font-family="Arial" font-size="16" text-anchor="middle">
-        No image available
-      </text>
-    </svg>`
-  );
-
-// Ink colors supported by the filters. Feel free to expand.
-const INK_COLORS = ["Amber", "Amethyst", "Emerald", "Ruby", "Sapphire", "Steel"];
-
-// Rarity options sample
-const RARITIES = ["Common", "Uncommon", "Rare", "Super Rare", "Legendary", "Fabled"];
-
-// Card types (simplified). Adjust to your schema.
-const CARD_TYPES = ["Character", "Action", "Item", "Location", "Song", "Floodborn", "Shift"];
-
-// Card classifications (Lorcana character classifications)
-const CLASSIFICATIONS = [
-  "Action", "Ally", "Captain", "Detective", "Dreamborn", "Floodborn", "Hyena", "Inventor", 
-  "King", "Location", "Mentor", "Pirate", "Princess", "Queen", "Robot", "Song", "Storyborn", "Titan",
-  "Alien", "Broom", "Deity", "Dragon", "Fairy", "Hero", "Illusion", "Item", "Knight", "Madrigal", 
-  "Musketeer", "Prince", "Puppy", "Racer", "Seven Dwarfs", "Sorcerer", "Tigger", "Villain"
-];
-
-// Card keywords (Lorcana abilities)
-const KEYWORDS = [
-  "Bodyguard", "Evasive", "Resist", "Shift", "Support", "Ward",
-  "Challenger", "Reckless", "Rush", "Singer", "Vanish"
-];
-
-// Sets (official Lorcana set names)
-const SETS = [
-  { code: "TFC", name: "The First Chapter" },
-  { code: "ROC", name: "Rise of the Floodborn" },
-  { code: "IAT", name: "Into the Inklands" },
-  { code: "URS", name: "Ursula's Return" },
-  { code: "SSK", name: "Shimmering Skies" },
-  { code: "AZS", name: "Azurite Sea" },
-  { code: "ARI", name: "Archazia's Island" },
-  { code: "ROJ", name: "Reign of Jafar" },
-  { code: "FAB", name: "Fabled" },
-];
-
-// -----------------------------------------------------------------------------
-// Utility helpers
-// -----------------------------------------------------------------------------
-
-const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
-
-function debounce(fn, delay) {
-  let t = null;
-  return (...args) => {
-    window.clearTimeout(t);
-    t = window.setTimeout(() => fn(...args), delay);
-  };
-}
-
-function groupBy(arr, keyFn) {
-  return arr.reduce((acc, item) => {
-    const k = keyFn(item);
-    (acc[k] ||= []).push(item);
-    return acc;
-  }, {});
-}
-
-function sum(arr, sel = (x) => x) {
-  return arr.reduce((a, b) => a + sel(b), 0);
-}
-
-function average(arr, sel = (x) => x) {
-  if (!arr.length) return 0;
-  return sum(arr, sel) / arr.length;
-}
-
-function toTitleCase(str) {
-  return (str || "")
-    .toLowerCase()
-    .split(" ")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
-}
-
-// Uniform attempt to compute cost from card structure
-function getCost(card) {
-  return card?.cost ?? card?.ink_cost ?? card?.inkCost ?? 0;
-}
-
-// Uniform attempt to compute ink colors for card
-function getInks(card) {
-  // Accept arrays || single strings:
-  if (Array.isArray(card?.ink)) return card.ink;
-  if (Array.isArray(card?.inks)) return card.inks;
-  if (typeof card?.ink === "string") return [card.ink];
-  if (typeof card?.inkColor === "string") return [card.inkColor];
-  if (Array.isArray(card?.inkColors)) return card.inkColors;
-  return [];
-}
-
-// Try to format a code+number (e.g., set code and card number) into a consistent slug
-function safeSlug(...parts) {
-  return parts
-    .filter(Boolean)
-    .join("-")
-    .replace(/\s+/g, "-")
-    .replace(/[^a-zA-Z0-9-_]/g, "")
-    .toLowerCase();
-}
-
-// -----------------------------------------------------------------------------
-// Lorcast Image Resolver
-// -----------------------------------------------------------------------------
-
-/**
- * Create candidate image URLs for a given card using Lorcast patterns.
- * We try combinations based on set code/number/name, then different extensions.
- * Your data model may vary; adjust accessors to match your fields.
- */
-
-// -----------------------------------------------------------------------------
-// Data Fetch Adapter
-// -----------------------------------------------------------------------------
-
-/**
- * Plug in your primary metadata source here. This adapter supports:
- *  - Local JSON via /cards.json
- *  - Remote API via ENV || config
- *  - Optional Lorcast API if provided
- *
- * It returns a normalized shape:
- *   {
- *     id, name, set, number, cost, inks: [],
- *     type, rarity, text, image (resolved lazily),
- *     ...original
- *   }
- */
-
-// -----------------------------------------------------------------------------
-// Lorcast search adapter
-// -----------------------------------------------------------------------------
-
-async function fetchCardsBySearch(query, { signal } = {}) {
-  if (!LORCAST_CONFIG.API_BASE) return [];
-  const url = `${LORCAST_CONFIG.API_BASE}/cards/search?q=${encodeURIComponent(query)}`;
-  try {
-    const res = await fetch(url, { signal });
-    if (!res.ok) throw new Error("search failed");
-    const data = await res.json();
-    if (Array.isArray(data?.data)) {
-      return data.data.map(normalizeCard);
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Lorcana Card Image Browser</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    body { margin: 0; background: #f8fafc; color: #0f172a; }
+    .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
+    .header h1 { margin: 0 0 6px; font-size: 26px; }
+    .muted { color: #64748b; font-size: 14px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 16px; }
+    input[type="text"], select, button, input[type="url"] {
+      padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 10px; background:#fff; box-shadow: 0 1px 0 rgba(0,0,0,0.02);
     }
-    return [];
-  } catch (e) {
-    console.error("Lorcast search error", e);
-    return [];
-  }
-}
-async function fetchAllCards({ signal } = {}) {
-  try {
-    if (!LORCAST_CONFIG.API_BASE) {
-      console.log('Debug - No Lorcast API configured');
-      return [];
-    }
-    
-    console.log('Debug - Fetching from Lorcast API...');
-    const res = await fetch(`${LORCAST_CONFIG.API_BASE}/cards/search?q=`, { signal });
-    
-    if (!res.ok) {
-      console.error('Debug - Lorcast API failed:', res.status, res.statusText);
-      return [];
-    }
-    
-    const data = await res.json();
-    console.log('Debug - Lorcast API response:', data);
-    console.log('Debug - Response keys:', Object.keys(data));
-    console.log('Debug - data.results:', data?.results);
-    console.log('Debug - data.results type:', typeof data?.results);
-    console.log('Debug - data.results length:', data?.results?.length);
-    
-    if (data?.results && Array.isArray(data.results) && data.results.length) {
-      console.log('Debug - Found cards:', data.results.length);
-      console.log('Debug - First card sample:', data.results[0]);
-      return data.results.map(normalizeCard);
-    } else {
-      console.log('Debug - No results in API response');
-      console.log('Debug - Full response structure:', JSON.stringify(data, null, 2));
-      return [];
-    }
-  } catch (error) {
-    console.error('Debug - Fetch error:', error);
-    return [];
-  }
-}
+    input[type="text"]{ flex: 1 1 360px; min-width: 260px; }
+    input[readonly]{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+    figure { margin: 0; background:#fff; border:1px solid #e2e8f0; border-radius: 14px; overflow: hidden; cursor: pointer; transition: box-shadow .15s; }
+    figure:hover{ box-shadow: 0 6px 16px rgba(2,6,23,0.08); }
+    figcaption { padding: 8px 10px; }
+    .title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sub { color:#64748b; font-size: 12px; }
+    .badge { display:inline-block; font-size: 10px; color:#334155; background:#e2e8f0; padding:2px 6px; border-radius:999px; margin-left:6px; vertical-align: middle; }
+    .preview { position: fixed; right: 12px; bottom: 12px; background: rgba(255,255,255,.92); border:1px solid #e2e8f0; border-radius: 14px; padding: 8px; display:flex; gap:8px; align-items: center; box-shadow: 0 6px 18px rgba(2,6,23,0.12); }
+    .preview img { width: 56px; border-radius: 8px; }
+    .btn { cursor:pointer; }
+    .muted-inline { color:#64748b; font-size:12px; }
+    .error { color:#dc2626; font-weight:600; }
+    html.overlay, body.overlay { height:100%; background: transparent; }
+    .wrap { width:100vw; height:100vh; display:grid; place-items:center; }
+    .fade-in { opacity: 0; transition: opacity .2s ease-in; }
+    .fade-in.loaded { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
 
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+  <!-- Firebase (Compat for simple inline use) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 
-function normalizeCard(raw) {
-  // Prefer Lorcast v0 model if present
-  const lorcastSet = raw.set && (raw.set.code || raw.set.name) ? raw.set : null;
-  const setCode = lorcastSet ? (lorcastSet.code ?? lorcastSet.id ?? lorcastSet.name) : (raw.set || raw.set_code || raw.setCode || raw.setName || "Unknown");
-  const setName = lorcastSet ? (lorcastSet.name ?? lorcastSet.code) : (raw.setName || null);
+  <!-- React preset only; no optional chaining/nullish to avoid plugins -->
+  <script type="text/babel" data-presets="react">
+    const { useEffect, useMemo, useRef, useState } = React;
 
-  const collectorNo = raw.collector_number || raw.number || raw.no || 0;
-  const name = raw.name || raw.title || "Unknown Card";
-  const id =
-    raw.id ||
-    raw._id ||
-    `${setCode}-${collectorNo}-${name}`;
-
-  // Handle 'type' which might be array in Lorcast
-  const typeRaw = raw.type || raw.cardType || raw.category || "Unknown";
-  const type = Array.isArray(typeRaw) ? typeRaw.join("/") : typeRaw;
-
-  // Lorcast uses 'ink' (string) and 'inkwell' boolean
-  let inks = getInks(raw);
-  if (!inks.length && typeof raw.ink === "string") inks = [raw.ink];
-
-  const rarity = raw.rarity || raw.rarityLabel || "Unknown";
-  const text =
-    raw.text ||
-    raw.rules_text ||
-    raw.abilityText ||
-    raw.rules ||
-    raw.abilities ||
-    "";
-
-  // Only use Lorcast API images
-  const lorcastImage = raw.image_uris?.digital?.normal || 
-                      raw.image_uris?.digital?.small || 
-                      raw.image_uris?.digital?.large || null;
-
-  // Prefer explicit cost field names
-  const cost =
-    raw.cost ?? raw.ink_cost ?? raw.inkCost ?? (typeof raw.move_cost === "number" ? raw.move_cost : 0);
-
-  return {
-    id,
-    name,
-    set: setCode,
-    setName: setName || undefined,
-    number: collectorNo,
-    cost,
-    inks,
-    type,
-    rarity,
-    text,
-    _rawImage: lorcastImage,  // Only Lorcast images
-    _imageFromAPI: lorcastImage,  // Same as raw image
-    _raw: raw,
-  };
-}
-
-
-// -----------------------------------------------------------------------------
-// Local storage & caching
-// -----------------------------------------------------------------------------
-
-const LS_KEYS = {
-  DECK: "lorcana.deck.v1",
-  FILTERS: "lorcana.filters.v1",
-  CACHE_IMG: "lorcana.imageCache.v1",
-  CACHE_CARDS: "lorcana.cardsCache.v1",
-};
-
-function loadLS(key, fallback) {
-  try {
-    const v = localStorage.getItem(key);
-    return v ? JSON.parse(v) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function saveLS(key, value) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {}
-}
-
-// -----------------------------------------------------------------------------
-// Toasts
-// -----------------------------------------------------------------------------
-
-const ToastContext = createContext({ addToast: () => {} });
-
-function ToastProvider({ children }) {
-  const [toasts, setToasts] = useState([]);
-  const addToast = useCallback((message, type = "info", timeout = 3000) => {
-    const id = Math.random().toString(36).slice(2);
-    setToasts((t) => [...t, { id, message, type }]);
-    setTimeout(() => {
-      setToasts((t) => t.filter((x) => x.id !== id));
-    }, timeout);
-  }, []);
-
-  return (
-    <ToastContext.Provider value={{ addToast }}>
-      {children}
-      <div className="fixed right-4 bottom-4 z-50 space-y-2">
-        {toasts.map((t) => (
-          <div
-            key={t.id}
-            className={`px-3 py-2 rounded-xl shadow-lg text-sm ${
-              t.type === "error"
-                ? "bg-red-900/80 text-red-100 border border-red-700"
-                : t.type === "success"
-                ? "bg-emerald-900/80 text-emerald-100 border border-emerald-700"
-                : "bg-gray-800/80 text-gray-100 border border-gray-700"
-            }`}
-          >
-            {t.message}
-          </div>
-        ))}
-      </div>
-    </ToastContext.Provider>
-  );
-}
-
-function useToasts() {
-  return useContext(ToastContext);
-}
-
-// -----------------------------------------------------------------------------
-// Deck state
-// -----------------------------------------------------------------------------
-
-/**
- * Deck constraints (simplified; adjust to your house rules if needed):
- * - Max deck size: 60
- * - Min deck size: 60
- * - Max 4 copies per unique card (by id || by set+number)
- */
-const DECK_RULES = {
-  MIN_SIZE: 60,
-  MAX_SIZE: 60,
-  MAX_COPIES: 4,
-};
-
-function deckKey(card) {
-  // Uniqueness by set+number fallback; prefer id when stable
-  return card?.id || `${card?.set}-${card?.number}`;
-}
-
-const initialDeckState = () => {
-  const saved = loadLS(LS_KEYS.DECK, null);
-  return saved || { entries: {}, total: 0, name: "Untitled Deck" };
-};
-
-function deckReducer(state, action) {
-  switch (action.type) {
-    case "SET_NAME": {
-      const name = action.name || "Untitled Deck";
-      const next = { ...state, name };
-      saveLS(LS_KEYS.DECK, next);
-      return next;
-    }
-    case "RESET": {
-      const next = { entries: {}, total: 0, name: "Untitled Deck" };
-      saveLS(LS_KEYS.DECK, next);
-      return next;
-    }
-    case "IMPORT_STATE": {
-      const next = action.deck || { entries: {}, total: 0, name: "Imported Deck" };
-      saveLS(LS_KEYS.DECK, next);
-      return next;
-    }
-    case "ADD": {
-      const { card, count = 1 } = action;
-      const key = deckKey(card);
-      const existing = state.entries[key]?.count || 0;
-      const nextCount = clamp(existing + count, 0, DECK_RULES.MAX_COPIES);
-      const nextEntries = { ...state.entries };
-      nextEntries[key] = {
-        card,
-        count: nextCount,
-      };
-      const newTotal =
-        Object.values(nextEntries).reduce((a, b) => a + (b?.count || 0), 0) || 0;
-      const next = { ...state, entries: nextEntries, total: newTotal };
-      saveLS(LS_KEYS.DECK, next);
-      return next;
-    }
-    case "SET_COUNT": {
-      const { card, count } = action;
-      const key = deckKey(card);
-      const nextEntries = { ...state.entries };
-      nextEntries[key] = { card, count: clamp(count, 0, DECK_RULES.MAX_COPIES) };
-      const newTotal = Object.values(nextEntries).reduce((a, b) => a + (b?.count || 0), 0);
-      const next = { ...state, entries: nextEntries, total: newTotal };
-      return next;
-    }
-    case "REMOVE": {
-      const { card } = action;
-      const key = deckKey(card);
-      const nextEntries = { ...state.entries };
-      delete nextEntries[key];
-      const newTotal = Object.values(nextEntries).reduce((a, b) => a + (b?.count || 0), 0);
-      const next = { ...state, entries: nextEntries, total: newTotal };
-      saveLS(LS_KEYS.DECK, next);
-      return next;
-    }
-    default:
-      return state;
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Filters state
-// -----------------------------------------------------------------------------
-
-const initialFilterState = () => {
-  return (
-    loadLS(LS_KEYS.FILTERS, {
-      text: "",
-      inks: new Set(),
-      rarities: new Set(),
-      types: new Set(),
-      sets: new Set(),
-      classifications: new Set(),  // Changed from subtypes
-      keywords: new Set(),
-      costMin: 0,
-      costMax: 10,
-      showInkablesOnly: false,
-      sortBy: "name",
-      sortDir: "asc",
-      showFilterPanel: false,
-    }) || {}
-  );
-};
-
-function serializeFilterState(state) {
-  return {
-    ...state,
-    inks: Array.from(state.inks || []),
-    rarities: Array.from(state.rarities || []),
-    types: Array.from(state.types || []),
-    sets: Array.from(state.sets || []),
-    classifications: Array.from(state.classifications || []),  // Add this
-    keywords: Array.from(state.keywords || []),              // Add this
-  };
-}
-
-function hydrateFilterState(raw) {
-  return {
-    ...raw,
-    inks: new Set(raw.inks || []),
-    rarities: new Set(raw.rarities || []),
-    types: new Set(raw.types || []),
-    sets: new Set(raw.sets || []),
-    classifications: new Set(raw.classifications || []),  // Add this
-    keywords: new Set(raw.keywords || []),              // Add this
-  };
-}
-
-function filterReducer(state, action) {
-  switch (action.type) {
-    case "SET_TEXT":
-      return persist({ ...state, text: action.text || "" });
-    case "TOGGLE_INK": {
-      const inks = new Set(state.inks);
-      if (inks.has(action.ink)) inks.delete(action.ink);
-      else inks.add(action.ink);
-      return persist({ ...state, inks });
-    }
-    case "TOGGLE_CLASSIFICATION": {
-  const classifications = new Set(state.classifications);
-  if (classifications.has(action.classification)) classifications.delete(action.classification);
-  else classifications.add(action.classification);
-  return persist({ ...state, classifications });
-}
-case "TOGGLE_KEYWORD": {
-  const keywords = new Set(state.keywords);
-  if (keywords.has(action.keyword)) keywords.delete(action.keyword);
-  else keywords.add(action.keyword);
-  return persist({ ...state, keywords });
-}
-    case "TOGGLE_RARITY": {
-      const rarities = new Set(state.rarities);
-      if (rarities.has(action.rarity)) rarities.delete(action.rarity);
-      else rarities.add(action.rarity);
-      return persist({ ...state, rarities });
-    }
-    case "TOGGLE_TYPE": {
-      const types = new Set(state.types);
-      if (types.has(action.cardType)) types.delete(action.cardType);
-      else types.add(action.cardType);
-      return persist({ ...state, types });
-    }
-    case "TOGGLE_SET": {
-      const sets = new Set(state.sets);
-      if (sets.has(action.setCode)) sets.delete(action.setCode);
-      else sets.add(action.setCode);
-      return persist({ ...state, sets });
-    }
-    case "SET_COST_RANGE": {
-      const costMin = clamp(action.costMin ?? state.costMin, 0, 20);
-      const costMax = clamp(action.costMax ?? state.costMax, 0, 20);
-      return persist({ ...state, costMin, costMax });
-    }
-    case "SET_SHOW_INKABLES": {
-      return persist({ ...state, showInkablesOnly: !!action.value });
-    }
-    case "SET_SORT": {
-      return persist({
-        ...state,
-        sortBy: action.sortBy || state.sortBy,
-        sortDir: action.sortDir || state.sortDir,
-      });
-    }
-    case "RESET": {
-      const next = initialFilterState();
-      saveLS(LS_KEYS.FILTERS, serializeFilterState(next));
-      return next;
-    }
-    case "TOGGLE_PANEL": {
-      return persist({ ...state, showFilterPanel: !state.showFilterPanel });
-    }
-    default:
-      return state;
-  }
-
-  function persist(next) {
-    saveLS(LS_KEYS.FILTERS, serializeFilterState(next));
-    return next;
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Card image cache hook
-// -----------------------------------------------------------------------------
-
-function useImageCache() {
-  const [cache, setCache] = useState(() => loadLS(LS_KEYS.CACHE_IMG, {}));
-  useEffect(() => {
-    saveLS(LS_KEYS.CACHE_IMG, cache);
-  }, [cache]);
-
-  const get = useCallback((key) => cache[key], [cache]);
-  const put = useCallback((key, value) => {
-    setCache((c) => ({ ...c, [key]: value }));
-  }, []);
-
-  return { get, put };
-}
-
-// -----------------------------------------------------------------------------
-// Components
-// -----------------------------------------------------------------------------
-
-// Header & topbar -------------------------------------------------------------
-
-function TopBar({ deckName, onRename, onResetDeck, onExport, onImport, onPrint, onToggleFilters, searchText, onSearchChange }) {
-  return (
-    <div className="flex items-center justify-between gap-4 p-3 bg-gray-900/70 border-b border-gray-800 sticky top-0 z-40 backdrop-blur">
-      <div className="flex items-center gap-2">
-        <input
-          className="bg-transparent text-xl font-semibold outline-none border-b border-gray-700 focus:border-emerald-400 transition px-1"
-          value={deckName}
-          onChange={(e) => onRename(e.target.value)}
-        />
-        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-800 border border-gray-700 text-gray-300">
-          v{APP_VERSION}
-        </span>
-      </div>
-
-      {/* Search bar - always visible */}
-      <div className="flex-1 max-w-md mx-4">
-        <input
-          className="w-full px-3 py-2 rounded-xl bg-gray-800 border border-gray-700 outline-none focus:border-emerald-400"
-          placeholder="Search cards by name, text, etc."
-          value={searchText}
-          onChange={(e) => onSearchChange(e.target.value)}
-        />
-      </div>
-
-      <div className="flex items-center gap-2">
-        <button
-          className="px-3 py-1.5 rounded-xl bg-gray-800 border border-gray-700 hover:bg-gray-700"
-          onClick={onToggleFilters}
-          title="Toggle filters (Ctrl+F)"
-        >
-          Filters
-        </button>
-        <button
-          className="px-3 py-1.5 rounded-xl bg-gray-800 border border-gray-700 hover:bg-gray-700"
-          onClick={onResetDeck}
-          title="Start fresh deck"
-        >
-          New
-        </button>
-        <button
-          className="px-3 py-1.5 rounded-xl bg-gray-800 border border-gray-700 hover:bg-gray-700"
-          onClick={onImport}
-          title="Import deck JSON"
-        >
-          Import
-        </button>
-        <button
-          className="px-3 py-1.5 rounded-xl bg-emerald-900 border border-emerald-700 hover:bg-emerald-800"
-          onClick={onExport}
-          title="Export deck JSON"
-        >
-          Export
-        </button>
-        <button
-          className="px-3 py-1.5 rounded-xl bg-blue-900 border border-gray-700 hover:bg-blue-800"
-          onClick={onPrint}
-          title="Open printable deck sheet"
-        >
-          Print
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// Filter panel ---------------------------------------------------------------
-
-function FilterPanel({ state, dispatch, onDone }) {
-  return (
-    <div className="p-3 bg-gray-900/50 border-b border-gray-800">
-      <div className="flex items-center gap-2 mb-2">
-        <input
-          className="w-full px-3 py-2 rounded-xl bg-gray-800 border border-gray-700 outline-none focus:border-emerald-400"
-          placeholder="Search cards by name, text, etc."
-          value={state.text}
-          onChange={(e) => dispatch({ type: "SET_TEXT", text: e.target.value })}
-        />
-        <button
-          className="px-3 py-2 rounded-xl bg-gray-800 border border-gray-700 hover:bg-gray-700"
-          onClick={() => dispatch({ type: "RESET" })}
-        >
-          Reset
-        </button>
-        <button
-          className="px-3 py-2 rounded-xl bg-emerald-900 border border-emerald-700 hover:bg-emerald-800"
-          onClick={onDone}
-        >
-          Done
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-        <fieldset className="bg-gray-900 rounded-xl p-3 border border-gray-800">
-          <legend className="text-sm text-gray-300">Ink Colors</legend>
-          <div className="flex flex-wrap gap-2 mt-2">
-            {INK_COLORS.map((ink) => (
-              <TogglePill
-                key={ink}
-                label={ink}
-                active={state.inks.has(ink)}
-                onClick={() => dispatch({ type: "TOGGLE_INK", ink })}
-              />
-            ))}
-          </div>
-        </fieldset>
-
-        <fieldset className="bg-gray-900 rounded-xl p-3 border border-gray-800">
-          <legend className="text-sm text-gray-300">Rarity</legend>
-          <div className="flex flex-wrap gap-2 mt-2">
-            {RARITIES.map((rar) => (
-              <TogglePill
-                key={rar}
-                label={rar}
-                active={state.rarities.has(rar)}
-                onClick={() => dispatch({ type: "TOGGLE_RARITY", rarity: rar })}
-              />
-            ))}
-          </div>
-        </fieldset>
-
-        <fieldset className="bg-gray-900 rounded-xl p-3 border border-gray-800">
-          <legend className="text-sm text-gray-300">Types</legend>
-          <div className="flex flex-wrap gap-2 mt-2">
-            {CARD_TYPES.map((t) => (
-              <TogglePill
-                key={t}
-                label={t}
-                active={state.types.has(t)}
-                onClick={() => dispatch({ type: "TOGGLE_TYPE", cardType: t })}
-              />
-            ))}
-          </div>
-        </fieldset>
-
-        <fieldset className="bg-gray-900 rounded-xl p-3 border border-gray-800">
-          <legend className="text-sm text-gray-300">Sets</legend>
-          <div className="flex flex-wrap gap-2 mt-2">
-            {SETS.map((s) => (
-              <TogglePill
-                key={s.code}
-                label={s.name}
-                active={state.sets.has(s.code)}
-                onClick={() => dispatch({ type: "TOGGLE_SET", setCode: s.code })}
-              />
-            ))}
-          </div>
-        </fieldset>
-
-        <fieldset className="bg-gray-900 rounded-xl p-3 border border-gray-800">
-          <legend className="text-sm text-gray-300">Classifications</legend>
-          <div className="flex flex-wrap gap-2 mt-2">
-            {CLASSIFICATIONS.map((classification) => (
-              <TogglePill
-                key={classification}
-                label={classification}
-                active={state.classifications.has(classification)}
-                onClick={() => dispatch({ type: "TOGGLE_CLASSIFICATION", classification })}
-              />
-            ))}
-          </div>
-        </fieldset>
-
-        <fieldset className="bg-gray-900 rounded-xl p-3 border border-gray-800">
-          <legend className="text-sm text-gray-300">Keywords</legend>
-          <div className="flex flex-wrap gap-2 mt-2">
-            {KEYWORDS.map((keyword) => (
-              <TogglePill
-                key={keyword}
-                label={keyword}
-                active={state.keywords.has(keyword)}
-                onClick={() => dispatch({ type: "TOGGLE_KEYWORD", keyword })}
-              />
-            ))}
-          </div>
-        </fieldset>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
-        <fieldset className="bg-gray-900 rounded-xl p-3 border border-gray-800">
-          <legend className="text-sm text-gray-300">Cost Range</legend>
-          <div className="flex items-center gap-3 mt-2">
-            <input
-              type="number"
-              className="w-24 px-2 py-1 rounded-lg bg-gray-800 border border-gray-700"
-              value={state.costMin}
-              onChange={(e) =>
-                dispatch({ type: "SET_COST_RANGE", costMin: parseInt(e.target.value || 0) })
-              }
-            />
-            <span className="text-gray-400">to</span>
-            <input
-              type="number"
-              className="w-24 px-2 py-1 rounded-lg bg-gray-800 border border-gray-700"
-              value={state.costMax}
-              onChange={(e) =>
-                dispatch({ type: "SET_COST_RANGE", costMax: parseInt(e.target.value || 0) })
-              }
-            />
-          </div>
-        </fieldset>
-
-        <fieldset className="bg-gray-900 rounded-xl p-3 border border-gray-800">
-          <legend className="text-sm text-gray-300">Inkable</legend>
-          <label className="flex items-center gap-2 mt-2">
-            <input
-              type="checkbox"
-              checked={state.showInkablesOnly}
-              onChange={(e) => dispatch({ type: "SET_SHOW_INKABLES", value: e.target.checked })}
-            />
-            <span>Show only inkables</span>
-          </label>
-        </fieldset>
-
-        <fieldset className="bg-gray-900 rounded-xl p-3 border border-gray-800">
-          <legend className="text-sm text-gray-300">Sort</legend>
-          <div className="flex items-center gap-2 mt-2">
-            <select
-              className="px-2 py-1 rounded-lg bg-gray-800 border border-gray-700"
-              value={state.sortBy}
-              onChange={(e) => dispatch({ type: "SET_SORT", sortBy: e.target.value })}
-            >
-              <option value="name">Name</option>
-              <option value="cost">Cost</option>
-              <option value="set">Set</option>
-              <option value="rarity">Rarity</option>
-            </select>
-            <select
-              className="px-2 py-1 rounded-lg bg-gray-800 border border-gray-700"
-              value={state.sortDir}
-              onChange={(e) => dispatch({ type: "SET_SORT", sortDir: e.target.value })}
-            >
-              <option value="asc">Asc</option>
-              <option value="desc">Desc</option>
-            </select>
-          </div>
-        </fieldset>
-      </div>
-    </div>
-  );
-}
-
-function TogglePill({ label, active, onClick }) {
-  return (
-    <button
-      className={`px-3 py-1.5 rounded-full border text-sm ${
-        active
-          ? "bg-emerald-900/80 border-emerald-700 text-emerald-100"
-          : "bg-gray-800 border-gray-700 text-gray-200"
-      }`}
-      onClick={onClick}
-    >
-      {label}
-    </button>
-  );
-}
-
-// Card grid ------------------------------------------------------------------
-
-function CardGrid({ cards, onAdd, onInspect }) {
-  return (
-    <div className="grid gap-3 p-3 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 2xl:grid-cols-10">
-      {cards.map((c) => (
-        <CardTile key={deckKey(c)} card={c} onAdd={() => onAdd(c)} onInspect={() => onInspect(c)} />
-      ))}
-    </div>
-  );
-}
-
-function useCardImage(card) {
-  const { get, put } = useImageCache();
-  const [src, setSrc] = useState(() => get(deckKey(card)) || null);
-
-  useEffect(() => {
-    let abort = new AbortController();
-    let mounted = true;
-
-    (async () => {
-      const cached = get(deckKey(card));
-      if (cached) {
-        setSrc(cached);
-        return;
-      }
-      
-      // Only use Lorcast API images
-      const lorcastImage = card._imageFromAPI;
-      if (lorcastImage) {
-        if (mounted) {
-          setSrc(lorcastImage);
-          put(deckKey(card), lorcastImage);
-        }
-      } else {
-        // No Lorcast image available
-        if (mounted) {
-          setSrc(FALLBACK_IMG);
-          put(deckKey(card), FALLBACK_IMG);
-        }
-      }
-    })();
-
-    return () => {
-      mounted = false;
-      abort.abort();
+    // ======= Firebase config (your project) =======
+    var FIREBASE_CONFIG = {
+      apiKey: "AIzaSyDkXEhCduyXpXRUqbUFIuFIUHWiQbVZ9Kw",
+      authDomain: "lorcana-efc7a.firebaseapp.com",
+      databaseURL: "https://lorcana-efc7a-default-rtdb.firebaseio.com",
+      projectId: "lorcana-efc7a",
+      storageBucket: "lorcana-efc7a.firebasestorage.app",
+      messagingSenderId: "634624437266",
+      appId: "1:634624437266:web:8c8c4ad2d461e3d7567ccb",
+      measurementId: "G-MBJ0ZJFR2W"
     };
-  }, [card, get, put]);
+    var DEFAULT_CHANNEL = "default";
+    // ==============================================
 
-  return src || FALLBACK_IMG;
-}
-
-function CardTile({ card, onAdd, onInspect }) {
-  const imgSrc = useCardImage(card);
-  return (
-    <div className="group bg-gray-900 rounded-xl border border-gray-800 overflow-hidden hover:shadow-xl hover:border-emerald-700 transition">
-      <div className="relative">
-        <img
-          src={imgSrc}
-          alt={card.name}
-          className="w-full aspect-[3/4] object-cover bg-black"
-          loading="lazy"
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition" />
-        <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between opacity-0 group-hover:opacity-100 transition">
-          <button
-            className="px-2 py-1 rounded-lg bg-emerald-900/90 border border-emerald-700 text-emerald-100 text-xs hover:bg-emerald-800"
-            onClick={onAdd}
-          >
-            Add to Deck
-          </button>
-          <button
-            className="px-2 py-1 rounded-lg bg-gray-900/90 border border-gray-700 text-gray-100 text-xs hover:bg-gray-800"
-            onClick={onInspect}
-          >
-            Details
-          </button>
-        </div>
-      </div>
-      <div className="p-2 border-t border-gray-800">
-        <div className="text-sm font-semibold truncate">{card.name}</div>
-        <div className="text-xs text-gray-400 flex items-center gap-2">
-          <span>{card.set}</span>
-          <span>#{card.number}</span>
-          <span>•</span>
-          <span>Cost {getCost(card)}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Deck panel -----------------------------------------------------------------
-
-function DeckPanel({ deck, onSetCount, onRemove, onExport, onImport }) {
-  const entries = Object.values(deck.entries || {}).filter((e) => e.count > 0);
-  const groupedByCost = useMemo(
-    () => groupBy(entries, (e) => getCost(e.card)),
-    [entries]
-  );
-
-  return (
-    <div className="p-3 bg-gray-950 border-l border-gray-800 h-full flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <div className="text-lg font-semibold">
-          Deck • <span className="text-emerald-400">{deck.total}</span> /{" "}
-          {DECK_RULES.MAX_SIZE}
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            className="px-3 py-1.5 rounded-xl bg-emerald-900 border border-emerald-700 hover:bg-emerald-800"
-            onClick={onExport}
-          >
-            Export
-          </button>
-          <button
-            className="px-3 py-1.5 rounded-xl bg-gray-800 border border-gray-700 hover:bg-gray-700"
-            onClick={onImport}
-          >
-            Import
-          </button>
-        </div>
-      </div>
-
-      <div className="space-y-3 overflow-auto pr-1">
-        {Object.keys(groupedByCost)
-          .sort((a, b) => parseInt(a) - parseInt(b))
-          .map((cost) => (
-            <div key={cost} className="bg-gray-900 rounded-xl border border-gray-800">
-              <div className="px-3 py-2 font-semibold border-b border-gray-800">
-                Cost {cost}
-              </div>
-              <div className="divide-y divide-gray-800">
-                {groupedByCost[cost].map((e) => (
-                  <DeckRow
-                    key={deckKey(e.card)}
-                    entry={e}
-                    onSetCount={(c) => onSetCount(e.card, c)}
-                    onRemove={() => onRemove(e.card)}
-                  />
-                ))}
-              </div>
-            </div>
-          ))}
-      </div>
-    </div>
-  );
-}
-
-function DeckRow({ entry, onSetCount, onRemove }) {
-  const c = entry.card;
-  const imgSrc = useCardImage(c);
-
-  return (
-    <div className="flex items-center gap-2 p-2">
-      <img src={imgSrc} alt={c.name} className="w-10 h-14 object-cover rounded-md" />
-      <div className="flex-1">
-        <div className="text-sm font-semibold">{c.name}</div>
-        <div className="text-xs text-gray-400">
-          {c.set} • #{c.number} • Cost {getCost(c)} • {c.type} • {c.rarity}
-        </div>
-      </div>
-      <div className="flex items-center gap-1">
-        <button
-          className="w-6 h-6 rounded-md bg-gray-800 border border-gray-700 hover:bg-gray-700"
-          onClick={() => onSetCount(Math.max(0, entry.count - 1))}
-        >
-          -
-        </button>
-        <input
-          className="w-10 text-center rounded-md bg-gray-800 border border-gray-700"
-          type="number"
-          value={entry.count}
-          onChange={(e) => onSetCount(parseInt(e.target.value || 0))}
-        />
-        <button
-          className="w-6 h-6 rounded-md bg-gray-800 border border-gray-700 hover:bg-gray-700"
-          onClick={() => onSetCount(Math.min(DECK_RULES.MAX_COPIES, entry.count + 1))}
-        >
-          +
-        </button>
-        <button
-          className="px-2 py-1 rounded-md bg-red-900/80 border border-red-700 hover:bg-red-800 text-xs"
-          onClick={onRemove}
-        >
-          Remove
-        </button>
-      </div>
-    </div>
-  );
-}
-function DeckStats({ deck }) {
-  const entries = Object.values(deck.entries || {}).filter((e) => e.count > 0);
-
-  const costCurve = useMemo(() => {
-    const map = new Map();
-    for (const e of entries) {
-      const cost = getCost(e.card);
-      map.set(cost, (map.get(cost) || 0) + e.count);
-    }
-    const rows = Array.from(map.entries())
-      .sort((a, b) => a[0] - b[0])
-      .map(([cost, count]) => ({ cost, count }));
-    return rows;
-  }, [entries]);
-
-  const inkCounts = useMemo(() => {
-    const counts = {};
-    for (const e of entries) {
-      for (const ink of getInks(e.card)) {
-        counts[ink] = (counts[ink] || 0) + e.count;
+    function initFirebase() {
+      try {
+        var app = firebase.initializeApp(FIREBASE_CONFIG);
+        return firebase.database(app);
+      } catch (e) {
+        try { return firebase.database(); } catch (e2) { return null; }
       }
     }
-    return Object.entries(counts).map(([ink, count]) => ({ ink, count }));
-  }, [entries]);
 
-  const typeCounts = useMemo(() => {
-    const counts = {};
-    for (const e of entries) {
-      const t = e.card.type || "Unknown";
-      counts[t] = (counts[t] || 0) + e.count;
+    function useDebouncedValue(value, delay) {
+      if (delay === void 0) delay = 400;
+      const [debounced, setDebounced] = useState(value);
+      useEffect(function () {
+        const t = setTimeout(function () { setDebounced(value); }, delay);
+        return function () { clearTimeout(t); };
+      }, [value, delay]);
+      return debounced;
     }
-    return Object.entries(counts).map(([type, count]) => ({ type, count }));
-  }, [entries]);
 
-  const total = entries.reduce((a, b) => a + b.count, 0);
-  const avgCost = average(entries, (e) => getCost(e.card)).toFixed(2);
+    function buildOverlayUrl(channel) {
+      const url = new URL(window.location.href);
+      url.searchParams.set('overlay', '1');
+      if (channel) url.searchParams.set('c', channel);
+      return url.toString();
+    }
 
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 p-3">
-      <StatCard title="Deck Size" value={total} subtitle={`${DECK_RULES.MIN_SIZE}-${DECK_RULES.MAX_SIZE}`} />
-      <StatCard title="Average Cost" value={avgCost} />
-      <StatCard title="Unique Cards" value={entries.length} />
+    // ---------- Data fetching (Lorcana-API.com primary; Lorcast fallback) ----------
+    function mapFromLorcanaAPI(item) {
+      if (!item) return null;
+      var img = item.Image || item.image || item.ImageUrl || item.ImageURL || (item.Images && (item.Images.Full || item.Images.full || item.Images.Normal));
+      var setName = item.Set_Name || item.Set || item.set_name || item.setName || '';
+      var number = item.Number || item.number || item.Collector_Number || item.collector_number || '';
+      var id = (item.ID || item.Id || item.id || (item.Name || item.name) + "-" + number + "-" + setName).toString();
+      return {
+        id: id,
+        name: item.Name || item.name || "",
+        set: setName,
+        number: number,
+        image_url: img || "",
+        _source: "Lorcana-API.com",
+        _raw: item
+      };
+    }
 
-      <ChartCard title="Cost Curve">
-        <div className="w-full h-56">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={costCurve}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="cost" />
-              <YAxis allowDecimals={false} />
-              <Tooltip />
-              <Bar dataKey="count" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </ChartCard>
+    function mapFromLorcast(item) {
+      if (!item) return null;
+      var dig = item.image_uris && item.image_uris.digital;
+      var img = (dig && (dig.large || dig.normal || dig.small)) || '';
+      var setName = (item.set && item.set.name) || '';
+      var number = item.collector_number || item.number || '';
+      return {
+        id: (item.id || (item.name + "-" + number + "-" + setName)).toString(),
+        name: item.name || "",
+        set: setName,
+        number: number,
+        image_url: img,
+        _source: "Lorcast",
+        _raw: item
+      };
+    }
 
-      <ChartCard title="Inks">
-        <div className="w-full h-56">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={inkCounts}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="ink" />
-              <YAxis allowDecimals={false} />
-              <Tooltip />
-              <Bar dataKey="count" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </ChartCard>
-
-      <ChartCard title="Types">
-        <div className="w-full h-56">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={typeCounts}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="type" />
-              <YAxis allowDecimals={false} />
-              <Tooltip />
-              <Bar dataKey="count" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </ChartCard>
-    </div>
-  );
-}
-
-function StatCard({ title, value, subtitle }) {
-return (
-<div className="p-3 bg-gray-900 rounded-xl border border-gray-800">
-<div className="text-sm text-gray-400">{title}</div>
-<div className="text-2xl font-semibold">{value}</div>
-{subtitle && <div className="text-xs text-gray-500">{subtitle}</div>}
-</div>
-);
-}
-
-function ChartCard({ title, children }) {
-return (
-<div className="p-3 bg-gray-900 rounded-xl border border-gray-800">
-<div className="text-sm text-gray-300 mb-2">{title}</div>
-{children}
-</div>
-);
-}
-
-// Modals ---------------------------------------------------------------------
-
-function Modal({ open, onClose, title, children, footer }) {
-if (!open) return null;
-return (
-<div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-<div className="bg-gray-900 border border-gray-800 rounded-2xl w-[min(100%-2rem,900px)] max-h-[85vh] overflow-hidden shadow-2xl">
-  <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
-    <div className="text-lg font-semibold">{title}</div>
-    <button
-      className="px-3 py-1.5 rounded-xl bg-gray-800 border border-gray-700 hover:bg-gray-700"
-      onClick={onClose}
-    >
-      Close
-    </button>
-  </div>
-  <div className="p-4 overflow-auto">{children}</div>
-  {footer && <div className="px-4 py-3 border-t border-gray-800">{footer}</div>}
-</div>
-</div>
-);
-}
-
-// Inspect card modal ---------------------------------------------------------
-
-function InspectCardModal({ open, card, onClose, onAdd }) {
-const imgSrc = useCardImage(card || {});
-if (!open || !card) return null;
-return (
-<Modal
-open={open}
-onClose={onClose}
-title={`${card.name} • ${card.set} #${card.number}`}
-footer={
-  <div className="flex items-center justify-end gap-2">
-    <button
-      className="px-3 py-1.5 rounded-xl bg-emerald-900 border border-emerald-700 hover:bg-emerald-800"
-      onClick={() => onAdd(card)}
-    >
-      Add to Deck
-    </button>
-  </div>
-}
->
-<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-  <img src={imgSrc} alt={card.name} className="w-full rounded-xl border border-gray-800" />
-  <div className="space-y-2">
-    <div className="text-sm text-gray-300">
-      <span className="font-semibold">Type:</span> {card.type} •{" "}
-      <span className="font-semibold">Rarity:</span> {card.rarity} •{" "}
-      <span className="font-semibold">Cost:</span> {getCost(card)}
-    </div>
-    <div className="text-sm text-gray-300">
-      <span className="font-semibold">Inks:</span> {getInks(card).join(", ") || "—"}
-    </div>
-    <div className="p-3 bg-gray-950 rounded-xl border border-gray-800">
-      <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">Card Text</div>
-      <div className="whitespace-pre-wrap">{card.text || "—"}</div>
-    </div>
-  </div>
-</div>
-</Modal>
-);
-}
-
-// Import/Export modals -------------------------------------------------------
-
-function ExportModal({ open, deck, onClose }) {
-const json = JSON.stringify(deck, null, 2);
-return (
-<Modal open={open} onClose={onClose} title="Export Deck">
-<div className="space-y-3">
-  <div>
-    <div className="text-sm text-gray-400 mb-1">Deck JSON</div>
-    <textarea
-      className="w-full h-64 px-3 py-2 rounded-xl bg-gray-800 border border-gray-700 font-mono text-xs"
-      readOnly
-      value={json}
-    />
-  </div>
-  <div className="flex items-center gap-2">
-    <button
-      className="px-3 py-1.5 rounded-xl bg-emerald-900 border border-emerald-700 hover:bg-emerald-800"
-      onClick={() => {
-        navigator.clipboard.writeText(json);
-      }}
-    >
-      Copy JSON
-    </button>
-    <a
-      className="px-3 py-1.5 rounded-xl bg-gray-800 border border-gray-700 hover:bg-gray-700"
-      href={`data:application/json;charset=utf-8,${encodeURIComponent(json)}`}
-      download={`${(deck.name || "deck").replace(/\s+/g, "_")}.json`}
-    >
-      Download JSON
-    </a>
-  </div>
-</div>
-</Modal>
-);
-}
-
-function ImportModal({ open, onClose, onImport }) {
-const [text, setText] = useState("");
-return (
-<Modal open={open} onClose={onClose} title="Import Deck">
-<div className="space-y-3">
-  <div className="text-sm text-gray-400">
-    Paste deck JSON exported from this app (or adapt from another builder).
-  </div>
-  <textarea
-    className="w-full h-64 px-3 py-2 rounded-xl bg-gray-800 border border-gray-700 font-mono text-xs"
-    placeholder='{"name":"My Deck","entries":{...},"total":60}'
-    value={text}
-    onChange={(e) => setText(e.target.value)}
-  />
-  <div className="flex items-center justify-end gap-2">
-    <button
-      className="px-3 py-1.5 rounded-xl bg-emerald-900 border border-emerald-700 hover:bg-emerald-800"
-      onClick={() => {
-        try {
-          const obj = JSON.parse(text);
-          onImport(obj);
-          onClose();
-        } catch {
-          alert("Invalid JSON");
+    async function fetchFromLorcanaAPI(query) {
+      try {
+        var url = new URL('https://api.lorcana-api.com/cards/fetch');
+        if (query) url.searchParams.set('search', query);
+        var res = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var data = await res.json();
+        var arr = Array.isArray(data) ? data : (Array.isArray(data && data.cards) ? data.cards : []);
+        var mapped = [];
+        for (var i=0;i<arr.length;i++) {
+          var m = mapFromLorcanaAPI(arr[i]);
+          if (m && m.image_url) mapped.push(m);
         }
-      }}
-    >
-      Import
-    </button>
-  </div>
-</div>
-</Modal>
-);
-}
+        return mapped;
+      } catch (e) {
+        return [];
+      }
+    }
 
-// Printable view -------------------------------------------------------------
+    async function fetchFromLorcast(query, uniqueMode) {
+      try {
+        var url = new URL('https://api.lorcast.com/v0/cards/search');
+        url.searchParams.set('q', query || '');
+        if (uniqueMode) url.searchParams.set('unique', uniqueMode);
+        var res = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var data = await res.json();
+        var arr = Array.isArray(data && data.results) ? data.results : [];
+        var mapped = [];
+        for (var i=0;i<arr.length;i++) {
+          var m = mapFromLorcast(arr[i]);
+          if (m && m.image_url) mapped.push(m);
+        }
+        return mapped;
+      } catch (e) {
+        return [];
+      }
+    }
 
-function PrintableSheet({ deck, onClose }) {
-const entries = Object.values(deck.entries || {}).filter((e) => e.count > 0);
-return (
-<Modal open={true} onClose={onClose} title="Printable Deck Sheet">
-<div className="space-y-4">
-  <div className="text-xl font-semibold">{deck.name}</div>
-  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-    {entries.map((e) => (
-      <div key={deckKey(e.card)} className="flex items-center gap-2">
-        <div className="w-14 h-20 bg-gray-800 rounded-md overflow-hidden border border-gray-700">
-          <img src={e.card._rawImage || FALLBACK_IMG} alt={e.card.name} className="w-full h-full object-cover" />
+    async function searchCards(query, uniqueMode) {
+      if (!query) return [];
+      var primary = await fetchFromLorcanaAPI(query);
+      if (primary && primary.length) return primary;
+      var fallback = await fetchFromLorcast(query, uniqueMode);
+      return fallback;
+    }
+
+    function App() {
+      const params = new URLSearchParams(window.location.search);
+      const overlayMode = params.get('overlay') === '1';
+      if (overlayMode) {
+        document.documentElement.classList.add('overlay');
+        document.body.classList.add('overlay');
+        return <OverlayPage />;
+      }
+      return <ControllerPage />;
+    }
+
+    function ControllerPage() {
+      const [query, setQuery] = useState('');
+      const [uniqueMode, setUniqueMode] = useState('cards'); // used by Lorcast fallback only
+      const [view, setView] = useState('grid');
+      const [cards, setCards] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState('');
+      const [selected, setSelected] = useState(null);
+      const [copyMsg, setCopyMsg] = useState('');
+      const [channel, setChannel] = useState(DEFAULT_CHANNEL);
+      const urlInputRef = useRef(null);
+      const db = useMemo(initFirebase, []);
+
+      const debounced = useDebouncedValue(query, 350);
+
+      useEffect(function () {
+        try {
+          const q = sessionStorage.getItem('lorcast:lastQuery');
+          const results = sessionStorage.getItem('lorcast:lastResults');
+          const unique = sessionStorage.getItem('lorcast:lastUnique');
+          const v = sessionStorage.getItem('lorcast:lastView');
+          const ch = localStorage.getItem('lorcana:channel');
+          if (q) setQuery(q);
+          if (unique) setUniqueMode(unique);
+          if (v) setView(v);
+          if (results) setCards(JSON.parse(results));
+          if (ch) setChannel(ch);
+        } catch (e) {}
+      }, []);
+
+      useEffect(function () { try { sessionStorage.setItem('lorcast:lastUnique', uniqueMode); } catch (e) {} }, [uniqueMode]);
+      useEffect(function () { try { sessionStorage.setItem('lorcast:lastView', view); } catch (e) {} }, [view]);
+      useEffect(function () { try { localStorage.setItem('lorcana:channel', channel); } catch (e) {} }, [channel]);
+
+      useEffect(function () {
+        const controller = new AbortController();
+        async function run() {
+          setError('');
+          if (!debounced) { setCards([]); return; }
+          setLoading(true);
+          try {
+            var results = await searchCards(debounced, uniqueMode);
+            setCards(results);
+            try { sessionStorage.setItem('lorcast:lastResults', JSON.stringify(results)); sessionStorage.setItem('lorcast:lastQuery', debounced); } catch (e) {}
+          } catch (e) {
+            if (e && e.name === 'AbortError') return;
+            setError((e && e.message) || 'Something went wrong');
+          } finally { setLoading(false); }
+        }
+        run();
+        return function () { controller.abort(); };
+      }, [debounced, uniqueMode]);
+
+      useEffect(function () {
+        const imgs = cards.slice(0,60).map(function (c) { return c && c.image_url; }).filter(Boolean);
+        imgs.forEach(function (src) { var img = new Image(); img.src = src; });
+      }, [cards]);
+
+      function pushSelectionToLocal(card) {
+        var src = (card && card.image_url) || '';
+        var payload = { image: src, title: card.name + (card.number ? ' #' + card.number : '') + (card.set ? ' · ' + card.set : ''), updatedAt: Date.now() };
+        try {
+          localStorage.setItem('lorcana:overlayPayload', JSON.stringify(payload));
+          localStorage.setItem('lorcana:overlayUpdatedAt', String(payload.updatedAt));
+          localStorage.setItem('lorcana:overlayImage', src);
+          localStorage.setItem('lorcana:overlayTitle', payload.title);
+        } catch (e) {}
+      }
+
+      async function pushSelectionToFirebase(card) {
+        if (!db) return;
+        try {
+          var src = (card && card.image_url) || '';
+          var ref = db.ref('/lorcana/' + channel);
+          await ref.set({ image: src, title: card.name + (card.number ? ' #' + card.number : '') + (card.set ? ' · ' + card.set : ''), updatedAt: Date.now() });
+        } catch (e) { console.error(e); }
+      }
+
+      function selectForOverlay(card) {
+        setSelected(card);
+        pushSelectionToLocal(card);
+        pushSelectionToFirebase(card);
+      }
+
+      const overlayUrl = useMemo(function () { return buildOverlayUrl(channel); }, [channel]);
+
+      async function copyOverlayUrl() {
+        const text = overlayUrl; setCopyMsg('');
+        try {
+          if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(text);
+            setCopyMsg('Copied to clipboard'); setTimeout(function () { setCopyMsg(''); }, 1500); return;
+          }
+          throw new Error('Clipboard API unavailable');
+        } catch (e) {
+          if (urlInputRef.current) {
+            try { urlInputRef.current.focus(); urlInputRef.current.select(); if (document.execCommand) document.execCommand('copy'); } catch (e2) {}
+          }
+          setCopyMsg('Press Ctrl+C (Cmd+C on Mac) to copy'); setTimeout(function () { setCopyMsg(''); }, 3000);
+        }
+      }
+
+      return (
+        <div className="container">
+          <div className="header">
+            <h1>Lorcana Card Image Browser</h1>
+            <div className="muted">Primary: Lorcana-API.com (badge shows source). Fallback: Lorcast.</div>
+          </div>
+
+          <div className="row">
+            <input type="text" placeholder="Search by name, type, text, ink, rarity..." value={query} onChange={function (e) { setQuery(e.target.value); }} />
+            <label className="muted-inline">Unique (fallback only):</label>
+            <select value={uniqueMode} onChange={function (e) { setUniqueMode(e.target.value); }}>
+              <option value="cards">cards</option>
+              <option value="prints">prints</option>
+            </select>
+            <label className="muted-inline">View:</label>
+            <select value={view} onChange={function (e) { setView(e.target.value); }}>
+              <option value="grid">grid</option>
+              <option value="list">list</option>
+            </select>
+            <label className="muted-inline">Channel:</label>
+            <input type="text" value={channel} onChange={function(e){ setChannel(e.target.value.trim() || DEFAULT_CHANNEL); }} style={{width:'140px'}} />
+          </div>
+
+          <div className="row">
+            <label className="muted-inline">Overlay URL:</label>
+            <input ref={urlInputRef} type="url" value={overlayUrl} readOnly onFocus={function (e) { e.currentTarget.select(); }} style={{flex:'1 1 auto', minWidth:'300px'}} />
+            <button className="btn" onClick={copyOverlayUrl}>Copy</button>
+            {copyMsg && <span className="muted-inline">{copyMsg}</span>}
+          </div>
+
+          {loading && <div className="muted">Searching...</div>}
+          {error && <div className="error">{error}</div>}
+
+          {!loading && !error && view === 'grid' && (
+            <div className="grid">{cards.map(function (card) { return <CardTile key={card.id} card={card} onSelect={selectForOverlay} />; })}</div>
+          )}
+          {!loading && !error && view === 'list' && (
+            <div style={{background:'#fff', border:'1px solid #e2e8f0', borderRadius:'14px', overflow:'hidden'}}>
+              {cards.map(function (card) { return <Row key={card.id} card={card} onSelect={selectForOverlay} />; })}
+            </div>
+          )}
+
+          {selected && <Preview card={selected} />}
         </div>
-        <div className="flex-1">
-          <div className="font-semibold">{e.card.name}</div>
-          <div className="text-xs text-gray-400">
-            {e.card.set} • #{e.card.number} • Cost {getCost(e.card)}
+      );
+    }
+
+    function CardTile({ card, onSelect }) {
+      var src = card && card.image_url;
+      const onKey = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } };
+      return (
+        <figure role="button" tabIndex={0} aria-label={"Select " + card.name + " for overlay"} onClick={function () { onSelect(card); }} onKeyDown={onKey}>
+          {src ? <img src={src} alt={(card.name || "")} style={{width:"100%", display:"block"}} loading="lazy" /> : <div style={{aspectRatio:"146/204", display:"grid", placeItems:"center", color:"#94a3b8"}}>No image</div>}
+          <figcaption>
+            <div className="title">{card.name} {card._source && <span className="badge">{card._source}</span>}</div>
+            <div className="sub">{(card.set || "Unknown Set")} &middot; #{card.number || "?"}</div>
+          </figcaption>
+        </figure>
+      );
+    }
+
+    function Row({ card, onSelect }) {
+      var src = card && card.image_url;
+      const onKey = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } };
+      return (
+        <div role="button" tabIndex={0} onClick={function () { onSelect(card); }} onKeyDown={onKey} style={{display:"flex", gap:"10px", padding:"10px", alignItems:"center", cursor:"pointer"}}>
+          {src ? <img src={src} alt="" style={{width:"80px", borderRadius:"8px", border:"1px solid #e2e8f0"}} loading="lazy" /> : <div style={{width:"80px", aspectRatio:"146/204", background:"#f1f5f9", borderRadius:"8px"}}/>}
+          <div style={{minWidth:0}}>
+            <div className="title" style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>{card.name} {card._source && <span className="badge">{card._source}</span>}</div>
+            <div className="sub">{(card.set || "Unknown Set")} &middot; #{card.number || "?"}</div>
           </div>
         </div>
-        <div className="text-lg font-bold w-8 text-right">{e.count}×</div>
-      </div>
-    ))}
-  </div>
-</div>
-</Modal>
-);
-}
-
-// Root App -------------------------------------------------------------------
-
-export default function App() {
-const { addToast } = useToasts();
-const [deck, deckDispatch] = useReducer(deckReducer, undefined, initialDeckState);
-const [filters, filterDispatch] = useReducer(filterReducer, undefined, initialFilterState);
-const [allCards, setAllCards] = useState([]);
-const [shownCards, setShownCards] = useState([]);
-const [loading, setLoading] = useState(true);
-const [inspectCard, setInspectCard] = useState(null);
-const [exportOpen, setExportOpen] = useState(false);
-const [importOpen, setImportOpen] = useState(false);
-const [printOpen, setPrintOpen] = useState(false);
-
-// Load all cards once
-useEffect(() => {
-  let abort = new AbortController();
-  (async () => {
-    setLoading(true);
-    const cached = loadLS(LS_KEYS.CACHE_CARDS, []);
-    console.log('Debug - cached cards length:', cached.length);
-    if (cached?.length) {
-      setAllCards(cached);
-      setLoading(false);
+      );
     }
-    try {
-      const data = await fetchAllCards({ signal: abort.signal });
-      console.log('Debug - fetched cards length:', data.length);
-      setAllCards(data);
-      saveLS(LS_KEYS.CACHE_CARDS, data);
-    } catch (e) {
-      console.error('Debug - fetch error:', e);
-      addToast("Failed to load cards; working from cache if available", "error");
-    } finally {
-      setLoading(false);
+
+    function Preview({ card }) {
+      var src = card && card.image_url;
+      return (
+        <div className="preview">
+          {src && <img src={src} alt="preview" />}
+          <div>
+            <div className="title" style={{maxWidth:"220px"}}>{card.name}</div>
+            <div className="sub">Sent to overlay</div>
+          </div>
+        </div>
+      );
     }
-  })();
-  return () => abort.abort();
-}, [addToast]);
 
-// Apply filters (always local; cards always visible, then filtered)
-useEffect(() => {
-  const run = debounce(() => {
-    console.log('Debug - allCards length:', allCards.length);
-    console.log('Debug - filters:', filters);
-    
-    // Always show cards, only filter if there are active filters
-const hasActiveFilters = filters.text?.trim() || 
-                       filters.inks?.size || 
-                       filters.rarities?.size || 
-                       filters.types?.size || 
-                       filters.sets?.size || 
-                       filters.classifications?.size ||  // Changed from subtypes
-                       filters.keywords?.size ||
-                       filters.costMin > 0 || 
-                       filters.costMax < 10;
-    
-    console.log('Debug - hasActiveFilters:', hasActiveFilters);
-    
-    if (hasActiveFilters) {
-      const list = applyFilters(allCards, filters);
-      console.log('Debug - filtered list length:', list.length);
-      setShownCards(list);
-    } else {
-      // No active filters - show all cards
-      console.log('Debug - showing all cards, length:', allCards.length);
-      setShownCards(allCards);
+    function preload(src, cb) {
+      if (!src) return;
+      var img = new Image();
+      img.onload = function(){ cb(true); };
+      img.onerror = function(){ cb(false); };
+      img.src = src;
     }
-  }, 50);
-  run();
-}, [allCards, filters]);
 
-const deckValid =
-deck.total >= DECK_RULES.MIN_SIZE && deck.total <= DECK_RULES.MAX_SIZE;
+    function OverlayPage() {
+      const params = new URLSearchParams(location.search);
+      const fit = params.get('fit') || 'contain';
+      const bg = params.get('bg') || 'transparent';
+      const channel = params.get('c') || DEFAULT_CHANNEL;
 
-function handleAdd(card) {
-deckDispatch({ type: "ADD", card, count: 1 });
-}
-function handleSetCount(card, count) {
-deckDispatch({ type: "SET_COUNT", card, count });
-}
-function handleRemove(card) {
-deckDispatch({ type: "REMOVE", card });
-}
+      useEffect(function () { if (bg !== 'transparent') document.body.style.background = bg; }, [bg]);
 
-function handleExport() {
-setExportOpen(true);
-}
-function handleImport() {
-setImportOpen(true);
-}
-function handleDoImport(obj) {
-deckDispatch({ type: "IMPORT_STATE", deck: obj });
-addToast("Deck imported", "success");
-}
-function handleResetDeck() {
-if (confirm("Start a new deck? This will clear the current deck.")) {
-deckDispatch({ type: "RESET" });
-addToast("New deck started", "success");
-}
-}
-function handlePrint() {
-setPrintOpen(true);
-}
+      const [src, setSrc] = useState('');
+      const [title, setTitle] = useState('');
+      const [stamp, setStamp] = useState('');
+      const [loaded, setLoaded] = useState(false);
+      const db = useMemo(initFirebase, []);
 
-// Keyboard shortcuts (basic)
-useEffect(() => {
-const onKey = (e) => {
-if (e.key === "f" && (e.ctrlKey || e.metaKey)) {
-  e.preventDefault();
-  filterDispatch({ type: "TOGGLE_PANEL" });
-}
-};
-window.addEventListener("keydown", onKey);
-return () => window.removeEventListener("keydown", onKey);
-}, []);
+      function applyPayload(payload) {
+        if (!payload || !payload.image) return; // don't blank
+        var newSrc = payload.image;
+        var newTitle = payload.title || '';
+        preload(newSrc, function(ok){
+          if (ok) {
+            setSrc(newSrc);
+            setTitle(newTitle);
+            setLoaded(false);
+            setTimeout(function(){ setLoaded(true); }, 0);
+          }
+        });
+      }
 
-return (
-<ToastProvider>
-<div className="min-h-screen bg-gradient-to-b from-gray-950 to-black text-gray-100">
-  <TopBar
-  deckName={deck.name}
-  onRename={(name) => deckDispatch({ type: "SET_NAME", name })}
-  onResetDeck={handleResetDeck}
-  onExport={handleExport}
-  onImport={handleImport}
-  onPrint={handlePrint}
-  onToggleFilters={() => filterDispatch({ type: "TOGGLE_PANEL" })}
-  searchText={filters.text}
-  onSearchChange={(text) => filterDispatch({ type: "SET_TEXT", text })}
-/>
+      // Initial local read
+      useEffect(function () {
+        try {
+          var raw = localStorage.getItem('lorcana:overlayPayload');
+          var payload = null;
+          try { payload = raw ? JSON.parse(raw) : null; } catch (e) {}
+          if (payload && payload.image) {
+            setStamp(String(payload.updatedAt || ''));
+            applyPayload(payload);
+          } else {
+            var img = localStorage.getItem('lorcana:overlayImage') || '';
+            var ttl = localStorage.getItem('lorcana:overlayTitle') || '';
+            var st = localStorage.getItem('lorcana:overlayUpdatedAt') || '';
+            if (img) { setSrc(img); setTitle(ttl); setStamp(st); setLoaded(true); }
+          }
+        } catch (e) {}
+      }, []);
 
-  {filters.showFilterPanel && (
-    <FilterPanel
-      state={filters}
-      dispatch={filterDispatch}
-      onDone={() => filterDispatch({ type: "TOGGLE_PANEL" })}
-    />
-  )}
+      // Firebase realtime
+      useEffect(function () {
+        if (!db) return;
+        var ref = db.ref('/lorcana/' + channel);
+        var unsub = ref.on('value', function (snap) {
+          var v = snap.val() || {};
+          if (v && v.updatedAt && String(v.updatedAt) !== String(stamp) && v.image) {
+            setStamp(String(v.updatedAt));
+            applyPayload(v);
+          }
+        });
+        return function () { try { ref.off('value', unsub); } catch (e) {} };
+      }, [db, channel, stamp]);
 
-  <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px]">
-    <div>
-      {loading ? (
-        <div className="p-6 text-center text-gray-400">Loading cards…</div>
-      ) : shownCards.length ? (
-        <CardGrid
-          cards={shownCards}
-          onAdd={handleAdd}
-          onInspect={(c) => setInspectCard(c)}
-        />
-      ) : (
-        <div className="p-6 text-center text-gray-400">No cards match your filters.</div>
-      )}
-    </div>
-    <div className="border-l border-gray-800 min-h-[60vh]">
-      <DeckPanel
-        deck={deck}
-        onSetCount={handleSetCount}
-        onRemove={handleRemove}
-        onExport={() => setExportOpen(true)}
-        onImport={() => setImportOpen(true)}
-      />
-      <DeckStats deck={deck} />
-      <div className={`p-3 ${deckValid ? "text-emerald-300" : "text-red-300"}`}>
-        {deckValid
-          ? "Deck is valid."
-          : `Deck must be between ${DECK_RULES.MIN_SIZE} and ${DECK_RULES.MAX_SIZE} cards.`}
-      </div>
-    </div>
-  </div>
+      // Local polling fallback
+      useEffect(function () {
+        var t = setInterval(function () {
+          try {
+            var s = localStorage.getItem('lorcana:overlayUpdatedAt') || '';
+            if (s !== stamp) {
+              var raw = localStorage.getItem('lorcana:overlayPayload');
+              var payload = null;
+              try { payload = raw ? JSON.parse(raw) : null; } catch (e) {}
+              if (payload && payload.updatedAt && String(payload.updatedAt) === String(s)) {
+                setStamp(String(s));
+                applyPayload(payload);
+              }
+            }
+          } catch (e) {}
+        }, 1000);
+        return function () { clearInterval(t); };
+      }, [stamp]);
 
-  <InspectCardModal
-    open={!!inspectCard}
-    card={inspectCard}
-    onClose={() => setInspectCard(null)}
-    onAdd={handleAdd}
-  />
-  <ExportModal open={exportOpen} deck={deck} onClose={() => setExportOpen(false)} />
-  <ImportModal
-    open={importOpen}
-    onClose={() => setImportOpen(false)}
-    onImport={handleDoImport}
-  />
-  {printOpen && <PrintableSheet deck={deck} onClose={() => setPrintOpen(false)} />}
-</div>
-</ToastProvider>
-);
-}
+      const styleImg = (fit === 'cover')
+        ? { width:'100%', height:'100%', objectFit:'cover' }
+        : { maxWidth:'100%', maxHeight:'100%', objectFit:'contain' };
 
-// -----------------------------------------------------------------------------
-// Filtering + Sorting
-// -----------------------------------------------------------------------------
+      return (
+        <div className="wrap">
+          {src ? <img src={src} alt={title} className={"fade-in" + (loaded ? " loaded" : "")} style={styleImg} /> : <div style={{ color:'#94a3b8' }}>No selection yet. Select a card in the controller.</div>}
+        </div>
+      );
+    }
 
-function applyFilters(cards, filters) {
-let list = cards.slice();
-
-// Only apply text filter if there's actual search text
-if (filters.text && filters.text.trim()) {
-const q = filters.text.toLowerCase().trim();
-list = list.filter((c) => {
-return (
-  c.name?.toLowerCase().includes(q) ||
-  c.text?.toLowerCase().includes(q) ||
-  c.type?.toLowerCase().includes(q) ||
-  c.rarity?.toLowerCase().includes(q) ||
-  c.set?.toLowerCase().includes(q)
-);
-});
-}
-
-if (filters.inks?.size) {
-list = list.filter((c) => {
-const inks = new Set(getInks(c));
-for (const i of filters.inks) {
-  if (inks.has(i)) return true;
-}
-return false;
-});
-}
-
-if (filters.rarities?.size) {
-list = list.filter((c) => filters.rarities.has(c.rarity));
-}
-
-if (filters.types?.size) {
-list = list.filter((c) => filters.types.has(c.type));
-}
-
-if (filters.sets?.size) {
-list = list.filter((c) => filters.sets.has(c.set) || filters.sets.has(c.set?.code));
-}
-
-list = list.filter((c) => {
-const cost = getCost(c);
-return cost >= filters.costMin && cost <= filters.costMax;
-});
-// Classifications filter
-if (filters.classifications && filters.classifications.size > 0) {
-  list = list.filter((card) => {  // Changed from 'filtered' to 'list'
-    const cardClassifications = card.classifications || [];
-    return cardClassifications.some(classification => filters.classifications.has(classification));
-  });
-}
-
-// Keywords filter
-if (filters.keywords && filters.keywords.size > 0) {
-  list = list.filter((card) => {  // Changed from 'filtered' to 'list'
-    const cardKeywords = card.keywords || [];
-    return cardKeywords.some(keyword => filters.keywords.has(keyword));
-  });
-}
-if (filters.showInkablesOnly) {
-list = list.filter((c) => {
-// Heuristic: card has "inkable" boolean || inkable in text
-if (typeof c._raw?.inkable === "boolean") return c._raw.inkable;
-if (typeof c.inkable === "boolean") return c.inkable;
-return /inkable/i.test(c.text || "");
-});
-}
-
-list.sort((a, b) => {
-const dir = filters.sortDir === "desc" ? -1 : 1;
-switch (filters.sortBy) {
-case "cost":
-  return (getCost(a) - getCost(b)) * dir;
-case "set": {
-  const sa = `${a.set}-${a.number}`;
-  const sb = `${b.set}-${b.number}`;
-  return sa.localeCompare(sb) * dir;
-}
-case "rarity":
-  return (rarityWeight(a.rarity) - rarityWeight(b.rarity)) * dir;
-case "name":
-default:
-  return a.name.localeCompare(b.name) * dir;
-}
-});
-
-return list;
-}
-
-function rarityWeight(r) {
-const idx = RARITIES.findIndex((x) => x.toLowerCase() === (r || "").toLowerCase());
-return idx === -1 ? 999 : idx;
-}
-
-// -----------------------------------------------------------------------------
-// End of file
-// ----------------------------------------------------------------------------- 
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
