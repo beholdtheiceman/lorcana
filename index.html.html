@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Lorcana Card Image Browser</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    body { margin: 0; background: #f8fafc; color: #0f172a; }
+    .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
+    .header h1 { margin: 0 0 6px; font-size: 26px; }
+    .muted { color: #64748b; font-size: 14px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 16px; }
+    input[type="text"], select, button, input[type="url"] {
+      padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 10px; background:#fff; box-shadow: 0 1px 0 rgba(0,0,0,0.02);
+    }
+    input[type="text"]{ flex: 1 1 360px; min-width: 260px; }
+    input[readonly]{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+    figure { margin: 0; background:#fff; border:1px solid #e2e8f0; border-radius: 14px; overflow: hidden; cursor: pointer; transition: box-shadow .15s; }
+    figure:hover{ box-shadow: 0 6px 16px rgba(2,6,23,0.08); }
+    figcaption { padding: 8px 10px; }
+    .title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sub { color:#64748b; font-size: 12px; }
+    .badge { display:inline-block; font-size: 10px; color:#334155; background:#e2e8f0; padding:2px 6px; border-radius:999px; margin-left:6px; vertical-align: middle; }
+    .preview { position: fixed; right: 12px; bottom: 12px; background: rgba(255,255,255,.92); border:1px solid #e2e8f0; border-radius: 14px; padding: 8px; display:flex; gap:8px; align-items: center; box-shadow: 0 6px 18px rgba(2,6,23,0.12); }
+    .preview img { width: 56px; border-radius: 8px; }
+    .btn { cursor:pointer; }
+    .muted-inline { color:#64748b; font-size:12px; }
+    .error { color:#dc2626; font-weight:600; }
+    html.overlay, body.overlay { height:100%; background: transparent; }
+    .wrap { width:100vw; height:100vh; display:grid; place-items:center; }
+    .fade-in { opacity: 0; transition: opacity .2s ease-in; }
+    .fade-in.loaded { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+  <!-- Firebase (Compat for simple inline use) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+
+  <!-- React preset only; no optional chaining/nullish to avoid plugins -->
+  <script type="text/babel" data-presets="react">
+    const { useEffect, useMemo, useRef, useState } = React;
+
+    // ======= Firebase config (your project) =======
+    var FIREBASE_CONFIG = {
+      apiKey: "AIzaSyDkXEhCduyXpXRUqbUFIuFIUHWiQbVZ9Kw",
+      authDomain: "lorcana-efc7a.firebaseapp.com",
+      databaseURL: "https://lorcana-efc7a-default-rtdb.firebaseio.com",
+      projectId: "lorcana-efc7a",
+      storageBucket: "lorcana-efc7a.firebasestorage.app",
+      messagingSenderId: "634624437266",
+      appId: "1:634624437266:web:8c8c4ad2d461e3d7567ccb",
+      measurementId: "G-MBJ0ZJFR2W"
+    };
+    var DEFAULT_CHANNEL = "default";
+    // ==============================================
+
+    function initFirebase() {
+      try {
+        var app = firebase.initializeApp(FIREBASE_CONFIG);
+        return firebase.database(app);
+      } catch (e) {
+        try { return firebase.database(); } catch (e2) { return null; }
+      }
+    }
+
+    function useDebouncedValue(value, delay) {
+      if (delay === void 0) delay = 400;
+      const [debounced, setDebounced] = useState(value);
+      useEffect(function () {
+        const t = setTimeout(function () { setDebounced(value); }, delay);
+        return function () { clearTimeout(t); };
+      }, [value, delay]);
+      return debounced;
+    }
+
+    function buildOverlayUrl(channel) {
+      const url = new URL(window.location.href);
+      url.searchParams.set('overlay', '1');
+      if (channel) url.searchParams.set('c', channel);
+      return url.toString();
+    }
+
+    // ---------- Data fetching (Lorcana-API.com primary; Lorcast fallback) ----------
+    function mapFromLorcanaAPI(item) {
+      if (!item) return null;
+      var img = item.Image || item.image || item.ImageUrl || item.ImageURL || (item.Images && (item.Images.Full || item.Images.full || item.Images.Normal));
+      var setName = item.Set_Name || item.Set || item.set_name || item.setName || '';
+      var number = item.Number || item.number || item.Collector_Number || item.collector_number || '';
+      var id = (item.ID || item.Id || item.id || (item.Name || item.name) + "-" + number + "-" + setName).toString();
+      return {
+        id: id,
+        name: item.Name || item.name || "",
+        set: setName,
+        number: number,
+        image_url: img || "",
+        _source: "Lorcana-API.com",
+        _raw: item
+      };
+    }
+
+    function mapFromLorcast(item) {
+      if (!item) return null;
+      var dig = item.image_uris && item.image_uris.digital;
+      var img = (dig && (dig.large || dig.normal || dig.small)) || '';
+      var setName = (item.set && item.set.name) || '';
+      var number = item.collector_number || item.number || '';
+      return {
+        id: (item.id || (item.name + "-" + number + "-" + setName)).toString(),
+        name: item.name || "",
+        set: setName,
+        number: number,
+        image_url: img,
+        _source: "Lorcast",
+        _raw: item
+      };
+    }
+
+    async function fetchFromLorcanaAPI(query) {
+      try {
+        var url = new URL('https://api.lorcana-api.com/cards/fetch');
+        if (query) url.searchParams.set('search', query);
+        var res = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var data = await res.json();
+        var arr = Array.isArray(data) ? data : (Array.isArray(data && data.cards) ? data.cards : []);
+        var mapped = [];
+        for (var i=0;i<arr.length;i++) {
+          var m = mapFromLorcanaAPI(arr[i]);
+          if (m && m.image_url) mapped.push(m);
+        }
+        return mapped;
+      } catch (e) {
+        return [];
+      }
+    }
+
+    async function fetchFromLorcast(query, uniqueMode) {
+      try {
+        var url = new URL('https://api.lorcast.com/v0/cards/search');
+        url.searchParams.set('q', query || '');
+        if (uniqueMode) url.searchParams.set('unique', uniqueMode);
+        var res = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var data = await res.json();
+        var arr = Array.isArray(data && data.results) ? data.results : [];
+        var mapped = [];
+        for (var i=0;i<arr.length;i++) {
+          var m = mapFromLorcast(arr[i]);
+          if (m && m.image_url) mapped.push(m);
+        }
+        return mapped;
+      } catch (e) {
+        return [];
+      }
+    }
+
+    async function searchCards(query, uniqueMode) {
+      if (!query) return [];
+      var primary = await fetchFromLorcanaAPI(query);
+      if (primary && primary.length) return primary;
+      var fallback = await fetchFromLorcast(query, uniqueMode);
+      return fallback;
+    }
+
+    function App() {
+      const params = new URLSearchParams(window.location.search);
+      const overlayMode = params.get('overlay') === '1';
+      if (overlayMode) {
+        document.documentElement.classList.add('overlay');
+        document.body.classList.add('overlay');
+        return <OverlayPage />;
+      }
+      return <ControllerPage />;
+    }
+
+    function ControllerPage() {
+      const [query, setQuery] = useState('');
+      const [uniqueMode, setUniqueMode] = useState('cards'); // used by Lorcast fallback only
+      const [view, setView] = useState('grid');
+      const [cards, setCards] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState('');
+      const [selected, setSelected] = useState(null);
+      const [copyMsg, setCopyMsg] = useState('');
+      const [channel, setChannel] = useState(DEFAULT_CHANNEL);
+      const urlInputRef = useRef(null);
+      const db = useMemo(initFirebase, []);
+
+      const debounced = useDebouncedValue(query, 350);
+
+      useEffect(function () {
+        try {
+          const q = sessionStorage.getItem('lorcast:lastQuery');
+          const results = sessionStorage.getItem('lorcast:lastResults');
+          const unique = sessionStorage.getItem('lorcast:lastUnique');
+          const v = sessionStorage.getItem('lorcast:lastView');
+          const ch = localStorage.getItem('lorcana:channel');
+          if (q) setQuery(q);
+          if (unique) setUniqueMode(unique);
+          if (v) setView(v);
+          if (results) setCards(JSON.parse(results));
+          if (ch) setChannel(ch);
+        } catch (e) {}
+      }, []);
+
+      useEffect(function () { try { sessionStorage.setItem('lorcast:lastUnique', uniqueMode); } catch (e) {} }, [uniqueMode]);
+      useEffect(function () { try { sessionStorage.setItem('lorcast:lastView', view); } catch (e) {} }, [view]);
+      useEffect(function () { try { localStorage.setItem('lorcana:channel', channel); } catch (e) {} }, [channel]);
+
+      useEffect(function () {
+        const controller = new AbortController();
+        async function run() {
+          setError('');
+          if (!debounced) { setCards([]); return; }
+          setLoading(true);
+          try {
+            var results = await searchCards(debounced, uniqueMode);
+            setCards(results);
+            try { sessionStorage.setItem('lorcast:lastResults', JSON.stringify(results)); sessionStorage.setItem('lorcast:lastQuery', debounced); } catch (e) {}
+          } catch (e) {
+            if (e && e.name === 'AbortError') return;
+            setError((e && e.message) || 'Something went wrong');
+          } finally { setLoading(false); }
+        }
+        run();
+        return function () { controller.abort(); };
+      }, [debounced, uniqueMode]);
+
+      useEffect(function () {
+        const imgs = cards.slice(0,60).map(function (c) { return c && c.image_url; }).filter(Boolean);
+        imgs.forEach(function (src) { var img = new Image(); img.src = src; });
+      }, [cards]);
+
+      function pushSelectionToLocal(card) {
+        var src = (card && card.image_url) || '';
+        var payload = { image: src, title: card ? (card.name + (card.number ? ' #' + card.number : '') + (card.set ? ' · ' + card.set : '')) : '', updatedAt: Date.now() };
+        try {
+          localStorage.setItem('lorcana:overlayPayload', JSON.stringify(payload));
+          localStorage.setItem('lorcana:overlayUpdatedAt', String(payload.updatedAt));
+          localStorage.setItem('lorcana:overlayImage', src);
+          localStorage.setItem('lorcana:overlayTitle', payload.title);
+        } catch (e) {}
+      }
+
+      async function pushSelectionToFirebase(card) {
+        if (!db) return;
+        try {
+          var src = (card && card.image_url) || '';
+          var ref = db.ref('/lorcana/' + channel);
+          await ref.set({ image: src, title: card ? (card.name + (card.number ? ' #' + card.number : '') + (card.set ? ' · ' + card.set : '')) : '', updatedAt: Date.now() });
+        } catch (e) { console.error(e); }
+      }
+
+      function selectForOverlay(card) {
+        setSelected(card);
+        pushSelectionToLocal(card);
+        pushSelectionToFirebase(card);
+      }
+
+      // NEW: Clear selection
+      function clearSelection() {
+        setSelected(null);
+        const payload = { image: '', title: '', updatedAt: Date.now() };
+
+        // Set blanks in local storage so polling overlay picks it up
+        try {
+          localStorage.setItem('lorcana:overlayPayload', JSON.stringify(payload));
+          localStorage.setItem('lorcana:overlayUpdatedAt', String(payload.updatedAt));
+          localStorage.setItem('lorcana:overlayImage', '');
+          localStorage.setItem('lorcana:overlayTitle', '');
+        } catch (e) {}
+
+        // Push blanks to Firebase so overlay clears in realtime
+        if (db) {
+          try {
+            var ref = db.ref('/lorcana/' + channel);
+            ref.set(payload);
+          } catch (e) { console.error(e); }
+        }
+      }
+
+      const overlayUrl = React.useMemo(function () { return buildOverlayUrl(channel); }, [channel]);
+
+      async function copyOverlayUrl() {
+        const text = overlayUrl; setCopyMsg('');
+        try {
+          if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(text);
+            setCopyMsg('Copied to clipboard'); setTimeout(function () { setCopyMsg(''); }, 1500); return;
+          }
+          throw new Error('Clipboard API unavailable');
+        } catch (e) {
+          if (urlInputRef.current) {
+            try { urlInputRef.current.focus(); urlInputRef.current.select(); if (document.execCommand) document.execCommand('copy'); } catch (e2) {}
+          }
+          setCopyMsg('Press Ctrl+C (Cmd+C on Mac) to copy'); setTimeout(function () { setCopyMsg(''); }, 3000);
+        }
+      }
+
+      return (
+        <div className="container">
+          <div className="header">
+            <h1>Lorcana Card Image Browser</h1>
+            <div className="muted">Primary: Lorcana-API.com (badge shows source). Fallback: Lorcast.</div>
+          </div>
+
+          <div className="row">
+            <input type="text" placeholder="Search by name, type, text, ink, rarity..." value={query} onChange={function (e) { setQuery(e.target.value); }} />
+            <label className="muted-inline">Unique (fallback only):</label>
+            <select value={uniqueMode} onChange={function (e) { setUniqueMode(e.target.value); }}>
+              <option value="cards">cards</option>
+              <option value="prints">prints</option>
+            </select>
+            <label className="muted-inline">View:</label>
+            <select value={view} onChange={function (e) { setView(e.target.value); }}>
+              <option value="grid">grid</option>
+              <option value="list">list</option>
+            </select>
+            <label className="muted-inline">Channel:</label>
+            <input type="text" value={channel} onChange={function(e){ setChannel(e.target.value.trim() || DEFAULT_CHANNEL); }} style={{width:'140px'}} />
+          </div>
+
+          <div className="row">
+            <label className="muted-inline">Overlay URL:</label>
+            <input ref={urlInputRef} type="url" value={overlayUrl} readOnly onFocus={function (e) { e.currentTarget.select(); }} style={{flex:'1 1 auto', minWidth:'300px'}} />
+            <button className="btn" onClick={copyOverlayUrl}>Copy</button>
+            <button className="btn" style={{ marginLeft: '8px' }} onClick={clearSelection}>Clear Overlay</button>
+            {copyMsg && <span className="muted-inline">{copyMsg}</span>}
+          </div>
+
+          {loading && <div className="muted">Searching...</div>}
+          {error && <div className="error">{error}</div>}
+
+          {!loading && !error && view === 'grid' && (
+            <div className="grid">{cards.map(function (card) { return <CardTile key={card.id} card={card} onSelect={selectForOverlay} />; })}</div>
+          )}
+          {!loading && !error && view === 'list' && (
+            <div style={{background:'#fff', border:'1px solid #e2e8f0', borderRadius:'14px', overflow:'hidden'}}>
+              {cards.map(function (card) { return <Row key={card.id} card={card} onSelect={selectForOverlay} />; })}
+            </div>
+          )}
+
+          {selected && <Preview card={selected} />}
+        </div>
+      );
+    }
+
+    function CardTile({ card, onSelect }) {
+      var src = card && card.image_url;
+      const onKey = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } };
+      return (
+        <figure role="button" tabIndex={0} aria-label={"Select " + card.name + " for overlay"} onClick={function () { onSelect(card); }} onKeyDown={onKey}>
+          {src ? <img src={src} alt={(card.name || "")} style={{width:"100%", display:"block"}} loading="lazy" /> : <div style={{aspectRatio:"146/204", display:"grid", placeItems:"center", color:"#94a3b8"}}>No image</div>}
+          <figcaption>
+            <div className="title">{card.name} {card._source && <span className="badge">{card._source}</span>}</div>
+            <div className="sub">{(card.set || "Unknown Set")} &middot; #{card.number || "?"}</div>
+          </figcaption>
+        </figure>
+      );
+    }
+
+    function Row({ card, onSelect }) {
+      var src = card && card.image_url;
+      const onKey = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } };
+      return (
+        <div role="button" tabIndex={0} onClick={function () { onSelect(card); }} onKeyDown={onKey} style={{display:"flex", gap:"10px", padding:"10px", alignItems:"center", cursor:"pointer"}}>
+          {src ? <img src={src} alt="" style={{width:"80px", borderRadius:"8px", border:"1px solid #e2e8f0"}} loading="lazy" /> : <div style={{width:"80px", aspectRatio:"146/204", background:"#f1f5f9", borderRadius:"8px"}}/>}
+          <div style={{minWidth:0}}>
+            <div className="title" style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>{card.name} {card._source && <span className="badge">{card._source}</span>}</div>
+            <div className="sub">{(card.set || "Unknown Set")} &middot; #{card.number || "?"}</div>
+          </div>
+        </div>
+      );
+    }
+
+    function Preview({ card }) {
+      var src = card && card.image_url;
+      return (
+        <div className="preview">
+          {src && <img src={src} alt="preview" />}
+          <div>
+            <div className="title" style={{maxWidth:"220px"}}>{card.name}</div>
+            <div className="sub">Sent to overlay</div>
+          </div>
+        </div>
+      );
+    }
+
+    function preload(src, cb) {
+      if (!src) return;
+      var img = new Image();
+      img.onload = function(){ cb(true); };
+      img.onerror = function(){ cb(false); };
+      img.src = src;
+    }
+
+    function OverlayPage() {
+      const params = new URLSearchParams(location.search);
+      const fit = params.get('fit') || 'contain';
+      const bg = params.get('bg') || 'transparent';
+      const channel = params.get('c') || DEFAULT_CHANNEL;
+
+      useEffect(function () { if (bg !== 'transparent') document.body.style.background = bg; }, [bg]);
+
+      const [src, setSrc] = useState('');
+      const [title, setTitle] = useState('');
+      const [stamp, setStamp] = useState('');
+      const [loaded, setLoaded] = useState(false);
+      const db = useMemo(initFirebase, []);
+
+      function applyPayload(payload) {
+        // Allow blanking the overlay when image is empty
+        if (!payload || !payload.image) {
+          setSrc('');
+          setTitle('');
+          setLoaded(true);
+          return;
+        }
+        var newSrc = payload.image;
+        var newTitle = payload.title || '';
+        preload(newSrc, function(ok){
+          if (ok) {
+            setSrc(newSrc);
+            setTitle(newTitle);
+            setLoaded(false);
+            setTimeout(function(){ setLoaded(true); }, 0);
+          }
+        });
+      }
+
+      // Initial local read
+      useEffect(function () {
+        try {
+          var raw = localStorage.getItem('lorcana:overlayPayload');
+          var payload = null;
+          try { payload = raw ? JSON.parse(raw) : null; } catch (e) {}
+          // Apply payload even if image is blank; use updatedAt to track
+          if (payload && typeof payload.updatedAt !== 'undefined') {
+            setStamp(String(payload.updatedAt || ''));
+            applyPayload(payload);
+          } else {
+            var img = localStorage.getItem('lorcana:overlayImage') || '';
+            var ttl = localStorage.getItem('lorcana:overlayTitle') || '';
+            var st = localStorage.getItem('lorcana:overlayUpdatedAt') || '';
+            if (img) { setSrc(img); setTitle(ttl); setStamp(st); setLoaded(true); }
+          }
+        } catch (e) {}
+      }, []);
+
+      // Firebase realtime
+      useEffect(function () {
+        if (!db) return;
+        var ref = db.ref('/lorcana/' + channel);
+        var unsub = ref.on('value', function (snap) {
+          var v = snap.val() || {};
+          // React to any updatedAt change, even when image is blank
+          if (v && v.updatedAt && String(v.updatedAt) !== String(stamp)) {
+            setStamp(String(v.updatedAt));
+            applyPayload(v);
+          }
+        });
+        return function () { try { ref.off('value', unsub); } catch (e) {} };
+      }, [db, channel, stamp]);
+
+      // Local polling fallback
+      useEffect(function () {
+        var t = setInterval(function () {
+          try {
+            var s = localStorage.getItem('lorcana:overlayUpdatedAt') || '';
+            if (s !== stamp) {
+              var raw = localStorage.getItem('lorcana:overlayPayload');
+              var payload = null;
+              try { payload = raw ? JSON.parse(raw) : null; } catch (e) {}
+              if (payload && payload.updatedAt && String(payload.updatedAt) === String(s)) {
+                setStamp(String(s));
+                applyPayload(payload);
+              }
+            }
+          } catch (e) {}
+        }, 1000);
+        return function () { clearInterval(t); };
+      }, [stamp]);
+
+      const styleImg = (fit === 'cover')
+        ? { width:'100%', height:'100%', objectFit:'cover' }
+        : { maxWidth:'100%', maxHeight:'100%', objectFit:'contain' };
+
+      return (
+        <div className="wrap">
+          {src ? <img src={src} alt={title} className={"fade-in" + (loaded ? " loaded" : "")} style={styleImg} /> : <div style={{ color:'#94a3b8' }}>No selection yet. Select a card in the controller.</div>}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
