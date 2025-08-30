@@ -241,7 +241,7 @@
 
       function pushSelectionToLocal(card) {
         var src = (card && card.image_url) || '';
-        var payload = { image: src, title: card.name + (card.number ? ' #' + card.number : '') + (card.set ? ' · ' + card.set : ''), updatedAt: Date.now() };
+        var payload = { image: src, title: card ? (card.name + (card.number ? ' #' + card.number : '') + (card.set ? ' · ' + card.set : '')) : '', updatedAt: Date.now() };
         try {
           localStorage.setItem('lorcana:overlayPayload', JSON.stringify(payload));
           localStorage.setItem('lorcana:overlayUpdatedAt', String(payload.updatedAt));
@@ -255,7 +255,7 @@
         try {
           var src = (card && card.image_url) || '';
           var ref = db.ref('/lorcana/' + channel);
-          await ref.set({ image: src, title: card.name + (card.number ? ' #' + card.number : '') + (card.set ? ' · ' + card.set : ''), updatedAt: Date.now() });
+          await ref.set({ image: src, title: card ? (card.name + (card.number ? ' #' + card.number : '') + (card.set ? ' · ' + card.set : '')) : '', updatedAt: Date.now() });
         } catch (e) { console.error(e); }
       }
 
@@ -265,7 +265,29 @@
         pushSelectionToFirebase(card);
       }
 
-      const overlayUrl = useMemo(function () { return buildOverlayUrl(channel); }, [channel]);
+      // NEW: Clear selection
+      function clearSelection() {
+        setSelected(null);
+        const payload = { image: '', title: '', updatedAt: Date.now() };
+
+        // Set blanks in local storage so polling overlay picks it up
+        try {
+          localStorage.setItem('lorcana:overlayPayload', JSON.stringify(payload));
+          localStorage.setItem('lorcana:overlayUpdatedAt', String(payload.updatedAt));
+          localStorage.setItem('lorcana:overlayImage', '');
+          localStorage.setItem('lorcana:overlayTitle', '');
+        } catch (e) {}
+
+        // Push blanks to Firebase so overlay clears in realtime
+        if (db) {
+          try {
+            var ref = db.ref('/lorcana/' + channel);
+            ref.set(payload);
+          } catch (e) { console.error(e); }
+        }
+      }
+
+      const overlayUrl = React.useMemo(function () { return buildOverlayUrl(channel); }, [channel]);
 
       async function copyOverlayUrl() {
         const text = overlayUrl; setCopyMsg('');
@@ -310,6 +332,7 @@
             <label className="muted-inline">Overlay URL:</label>
             <input ref={urlInputRef} type="url" value={overlayUrl} readOnly onFocus={function (e) { e.currentTarget.select(); }} style={{flex:'1 1 auto', minWidth:'300px'}} />
             <button className="btn" onClick={copyOverlayUrl}>Copy</button>
+            <button className="btn" style={{ marginLeft: '8px' }} onClick={clearSelection}>Clear Overlay</button>
             {copyMsg && <span className="muted-inline">{copyMsg}</span>}
           </div>
 
@@ -394,7 +417,13 @@
       const db = useMemo(initFirebase, []);
 
       function applyPayload(payload) {
-        if (!payload || !payload.image) return; // don't blank
+        // Allow blanking the overlay when image is empty
+        if (!payload || !payload.image) {
+          setSrc('');
+          setTitle('');
+          setLoaded(true);
+          return;
+        }
         var newSrc = payload.image;
         var newTitle = payload.title || '';
         preload(newSrc, function(ok){
@@ -413,7 +442,8 @@
           var raw = localStorage.getItem('lorcana:overlayPayload');
           var payload = null;
           try { payload = raw ? JSON.parse(raw) : null; } catch (e) {}
-          if (payload && payload.image) {
+          // Apply payload even if image is blank; use updatedAt to track
+          if (payload && typeof payload.updatedAt !== 'undefined') {
             setStamp(String(payload.updatedAt || ''));
             applyPayload(payload);
           } else {
@@ -431,7 +461,8 @@
         var ref = db.ref('/lorcana/' + channel);
         var unsub = ref.on('value', function (snap) {
           var v = snap.val() || {};
-          if (v && v.updatedAt && String(v.updatedAt) !== String(stamp) && v.image) {
+          // React to any updatedAt change, even when image is blank
+          if (v && v.updatedAt && String(v.updatedAt) !== String(stamp)) {
             setStamp(String(v.updatedAt));
             applyPayload(v);
           }
