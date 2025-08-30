@@ -495,7 +495,7 @@
 
       return (
         <div className="wrap">
-          {src ? <img src={src} alt={title} className={"fade-in" + (loaded ? " loaded" : "")} style={styleImg} /> : <div style={{ color:'#94a3b8' }}>No selection yet. Select a card in the controller.</div>}
+          {src ? <img src={src} alt={title} className={"fade-in" + (loaded ? " loaded" : "")} style={styleImg} /> : null}
         </div>
       );
     }
