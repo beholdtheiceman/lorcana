@@ -62,6 +62,18 @@
     var DEFAULT_CHANNEL = "default";
     // ==============================================
 
+    // ===== Instances / namespacing (per-URL) =====
+    function getInstanceFromURL() {
+      var params = new URLSearchParams(window.location.search);
+      var inst = params.get('inst') || params.get('c'); // prefer ?inst=, fallback to ?c=
+      return (inst && inst.trim()) || DEFAULT_CHANNEL;
+    }
+    var INSTANCE = getInstanceFromURL();
+
+    function k(name) { return "lorcana:" + INSTANCE + ":" + name; }    // localStorage keys
+    function sk(name) { return "lorcast:" + INSTANCE + ":" + name; }   // sessionStorage keys
+    // =============================================
+
     function initFirebase() {
       try {
         var app = firebase.initializeApp(FIREBASE_CONFIG);
@@ -84,6 +96,7 @@
     function buildOverlayUrl(channel) {
       const url = new URL(window.location.href);
       url.searchParams.set('overlay', '1');
+      url.searchParams.set('inst', INSTANCE); // include instance for overlay URL
       if (channel) url.searchParams.set('c', channel);
       return url.toString();
     }
@@ -192,11 +205,11 @@
 
       useEffect(function () {
         try {
-          const q = sessionStorage.getItem('lorcast:lastQuery');
-          const results = sessionStorage.getItem('lorcast:lastResults');
-          const unique = sessionStorage.getItem('lorcast:lastUnique');
-          const v = sessionStorage.getItem('lorcast:lastView');
-          const ch = localStorage.getItem('lorcana:channel');
+          const q = sessionStorage.getItem(sk('lastQuery'));
+          const results = sessionStorage.getItem(sk('lastResults'));
+          const unique = sessionStorage.getItem(sk('lastUnique'));
+          const v = sessionStorage.getItem(sk('lastView'));
+          const ch = localStorage.getItem(k('channel'));
           if (q) setQuery(q);
           if (unique) setUniqueMode(unique);
           if (v) setView(v);
@@ -205,9 +218,9 @@
         } catch (e) {}
       }, []);
 
-      useEffect(function () { try { sessionStorage.setItem('lorcast:lastUnique', uniqueMode); } catch (e) {} }, [uniqueMode]);
-      useEffect(function () { try { sessionStorage.setItem('lorcast:lastView', view); } catch (e) {} }, [view]);
-      useEffect(function () { try { localStorage.setItem('lorcana:channel', channel); } catch (e) {} }, [channel]);
+      useEffect(function () { try { sessionStorage.setItem(sk('lastUnique'), uniqueMode); } catch (e) {} }, [uniqueMode]);
+      useEffect(function () { try { sessionStorage.setItem(sk('lastView'), view); } catch (e) {} }, [view]);
+      useEffect(function () { try { localStorage.setItem(k('channel'), channel); } catch (e) {} }, [channel]);
 
       useEffect(function () {
         const controller = new AbortController();
@@ -218,7 +231,10 @@
           try {
             var results = await searchCards(debounced, uniqueMode);
             setCards(results);
-            try { sessionStorage.setItem('lorcast:lastResults', JSON.stringify(results)); sessionStorage.setItem('lorcast:lastQuery', debounced); } catch (e) {}
+            try {
+              sessionStorage.setItem(sk('lastResults'), JSON.stringify(results));
+              sessionStorage.setItem(sk('lastQuery'), debounced);
+            } catch (e) {}
           } catch (e) {
             if (e && e.name === 'AbortError') return;
             setError((e && e.message) || 'Something went wrong');
@@ -237,10 +253,10 @@
         var src = (card && card.image_url) || '';
         var payload = { image: src, title: card ? (card.name + (card.number ? ' #' + card.number : '') + (card.set ? ' · ' + card.set : '')) : '', updatedAt: Date.now() };
         try {
-          localStorage.setItem('lorcana:overlayPayload', JSON.stringify(payload));
-          localStorage.setItem('lorcana:overlayUpdatedAt', String(payload.updatedAt));
-          localStorage.setItem('lorcana:overlayImage', src);
-          localStorage.setItem('lorcana:overlayTitle', payload.title);
+          localStorage.setItem(k('overlayPayload'), JSON.stringify(payload));
+          localStorage.setItem(k('overlayUpdatedAt'), String(payload.updatedAt));
+          localStorage.setItem(k('overlayImage'), src);
+          localStorage.setItem(k('overlayTitle'), payload.title);
         } catch (e) {}
       }
 
@@ -266,10 +282,10 @@
 
         // Set blanks in local storage so polling overlay picks it up
         try {
-          localStorage.setItem('lorcana:overlayPayload', JSON.stringify(payload));
-          localStorage.setItem('lorcana:overlayUpdatedAt', String(payload.updatedAt));
-          localStorage.setItem('lorcana:overlayImage', '');
-          localStorage.setItem('lorcana:overlayTitle', '');
+          localStorage.setItem(k('overlayPayload'), JSON.stringify(payload));
+          localStorage.setItem(k('overlayUpdatedAt'), String(payload.updatedAt));
+          localStorage.setItem(k('overlayImage'), '');
+          localStorage.setItem(k('overlayTitle'), '');
         } catch (e) {}
 
         // Push blanks to Firebase so overlay clears in realtime
@@ -303,7 +319,7 @@
         <div className="container">
           <div className="header">
             <h1>Lorcana Card Image Browser</h1>
-            <div className="muted">Primary: Lorcana-API.com (badge shows source). Fallback: Lorcast.</div>
+            <div className="muted">Instance: <strong>{INSTANCE}</strong> · Primary: Lorcana-API.com (badge shows source). Fallback: Lorcast.</div>
           </div>
 
           <div className="row">
@@ -366,7 +382,7 @@
       const onKey = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } };
       return (
         <div role="button" tabIndex={0} onClick={function () { onSelect(card); }} onKeyDown={onKey} style={{display:"flex", gap:"10px", padding:"10px", alignItems:"center", cursor:"pointer"}}>
-          {src ? <img src={src} alt="" style={{width:"80px", borderRadius:"8px", border:"1px solid #e2e8f0"}} loading="lazy" /> : <div style={{width:"80px", aspectRatio:"146/204", background:"#f1f5f9", borderRadius:"8px"}}/>}
+          {src ? <img src={src} alt="" style={{width:"80px", borderRadius:"8px", border:"1px solid #e2e8f0"}} loading="lazy" /> : <div style={{width:"80px", aspectRatio:"146/204", background:"#f1f5g9", borderRadius:"8px"}}/>}
           <div style={{minWidth:0}}>
             <div className="title" style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>{card.name} {card._source && <span className="badge">{card._source}</span>}</div>
             <div className="sub">{(card.set || "Unknown Set")} &middot; #{card.number || "?"}</div>
@@ -433,7 +449,7 @@
       // Initial local read
       useEffect(function () {
         try {
-          var raw = localStorage.getItem('lorcana:overlayPayload');
+          var raw = localStorage.getItem(k('overlayPayload'));
           var payload = null;
           try { payload = raw ? JSON.parse(raw) : null; } catch (e) {}
           // Apply payload even if image is blank; use updatedAt to track
@@ -441,9 +457,9 @@
             setStamp(String(payload.updatedAt || ''));
             applyPayload(payload);
           } else {
-            var img = localStorage.getItem('lorcana:overlayImage') || '';
-            var ttl = localStorage.getItem('lorcana:overlayTitle') || '';
-            var st = localStorage.getItem('lorcana:overlayUpdatedAt') || '';
+            var img = localStorage.getItem(k('overlayImage')) || '';
+            var ttl = localStorage.getItem(k('overlayTitle')) || '';
+            var st = localStorage.getItem(k('overlayUpdatedAt')) || '';
             if (img) { setSrc(img); setTitle(ttl); setStamp(st); setLoaded(true); }
           }
         } catch (e) {}
@@ -468,9 +484,9 @@
       useEffect(function () {
         var t = setInterval(function () {
           try {
-            var s = localStorage.getItem('lorcana:overlayUpdatedAt') || '';
+            var s = localStorage.getItem(k('overlayUpdatedAt')) || '';
             if (s !== stamp) {
-              var raw = localStorage.getItem('lorcana:overlayPayload');
+              var raw = localStorage.getItem(k('overlayPayload'));
               var payload = null;
               try { payload = raw ? JSON.parse(raw) : null; } catch (e) {}
               if (payload && payload.updatedAt && String(payload.updatedAt) === String(s)) {
