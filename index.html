@@ -32,6 +32,9 @@
     .wrap { width:100vw; height:100vh; display:grid; place-items:center; }
     .fade-in { opacity: 0; transition: opacity .2s ease-in; }
     .fade-in.loaded { opacity: 1; }
+    .switch {
+      display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border:1px solid #e2e8f0; border-radius:10px; background:#fff;
+    }
   </style>
 </head>
 <body>
@@ -44,7 +47,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 
-  <!-- React preset only; **no optional chaining** so this parses fine -->
+  <!-- React preset only; **no optional chaining** -->
   <script type="text/babel" data-presets="react">
     const { useEffect, useMemo, useRef, useState } = React;
 
@@ -96,7 +99,7 @@
     function buildOverlayUrl(channel) {
       const url = new URL(window.location.href);
       url.searchParams.set('overlay', '1');
-      url.searchParams.set('inst', INSTANCE); // include instance for overlay URL
+      url.searchParams.set('inst', INSTANCE);
       if (channel) url.searchParams.set('c', channel);
       return url.toString();
     }
@@ -189,6 +192,8 @@
     }
 
     function ControllerPage() {
+      const params = new URLSearchParams(window.location.search);
+      const urlChannel = params.get('c'); // may be null
       const [query, setQuery] = useState('');
       const [uniqueMode, setUniqueMode] = useState('cards'); // used by Lorcast fallback only
       const [view, setView] = useState('grid');
@@ -197,24 +202,32 @@
       const [error, setError] = useState('');
       const [selected, setSelected] = useState(null);
       const [copyMsg, setCopyMsg] = useState('');
-      const [channel, setChannel] = useState(DEFAULT_CHANNEL);
+      // channel starts as: URL ?c=… || stored channel || INSTANCE
+      const [channel, setChannel] = useState(urlChannel || (typeof localStorage!=="undefined" ? localStorage.getItem(k('channel')) : '') || INSTANCE);
+      // lockChannel: when true, channel is forced to INSTANCE (no mismatch)
+      const [lockChannel, setLockChannel] = useState(true);
+
       const urlInputRef = useRef(null);
       const db = useMemo(initFirebase, []);
 
       const debounced = useDebouncedValue(query, 350);
 
+      // When lockChannel is ON, keep channel = INSTANCE
+      useEffect(function(){
+        if (lockChannel && channel !== INSTANCE) setChannel(INSTANCE);
+      }, [lockChannel]);
+
+      // Persist simple UI state per instance
       useEffect(function () {
         try {
           const q = sessionStorage.getItem(sk('lastQuery'));
           const results = sessionStorage.getItem(sk('lastResults'));
           const unique = sessionStorage.getItem(sk('lastUnique'));
           const v = sessionStorage.getItem(sk('lastView'));
-          const ch = localStorage.getItem(k('channel'));
           if (q) setQuery(q);
           if (unique) setUniqueMode(unique);
           if (v) setView(v);
           if (results) setCards(JSON.parse(results));
-          if (ch) setChannel(ch);
         } catch (e) {}
       }, []);
 
@@ -264,7 +277,7 @@
         if (!db) return;
         try {
           var src = (card && card.image_url) || '';
-          var ref = db.ref('/lorcana/' + channel);
+          var ref = db.ref('/lorcana/' + (lockChannel ? INSTANCE : channel));
           await ref.set({ image: src, title: card ? (card.name + (card.number ? ' #' + card.number : '') + (card.set ? ' · ' + card.set : '')) : '', updatedAt: Date.now() });
         } catch (e) { console.error(e); }
       }
@@ -275,29 +288,26 @@
         pushSelectionToFirebase(card);
       }
 
-      // NEW: Clear selection
+      // Clear selection
       function clearSelection() {
         setSelected(null);
         const payload = { image: '', title: '', updatedAt: Date.now() };
-
-        // Set blanks in local storage so polling overlay picks it up
         try {
           localStorage.setItem(k('overlayPayload'), JSON.stringify(payload));
           localStorage.setItem(k('overlayUpdatedAt'), String(payload.updatedAt));
           localStorage.setItem(k('overlayImage'), '');
           localStorage.setItem(k('overlayTitle'), '');
         } catch (e) {}
-
-        // Push blanks to Firebase so overlay clears in realtime
         if (db) {
           try {
-            var ref = db.ref('/lorcana/' + channel);
+            var ref = db.ref('/lorcana/' + (lockChannel ? INSTANCE : channel));
             ref.set(payload);
           } catch (e) { console.error(e); }
         }
       }
 
-      const overlayUrl = React.useMemo(function () { return buildOverlayUrl(channel); }, [channel]);
+      const effectiveChannel = lockChannel ? INSTANCE : channel;
+      const overlayUrl = React.useMemo(function () { return buildOverlayUrl(effectiveChannel); }, [effectiveChannel]);
 
       async function copyOverlayUrl() {
         const text = overlayUrl; setCopyMsg('');
@@ -319,7 +329,10 @@
         <div className="container">
           <div className="header">
             <h1>Lorcana Card Image Browser</h1>
-            <div className="muted">Instance: <strong>{INSTANCE}</strong> · Primary: Lorcana-API.com (badge shows source). Fallback: Lorcast.</div>
+            <div className="muted">
+              Instance: <strong>{INSTANCE}</strong> · Channel in use: <strong>{effectiveChannel}</strong>
+              {lockChannel ? " (locked to instance)" : ""}
+            </div>
           </div>
 
           <div className="row">
@@ -334,8 +347,18 @@
               <option value="grid">grid</option>
               <option value="list">list</option>
             </select>
-            <label className="muted-inline">Channel:</label>
-            <input type="text" value={channel} onChange={function(e){ setChannel(e.target.value.trim() || DEFAULT_CHANNEL); }} style={{width:'140px'}} />
+
+            <span className="switch">
+              <input id="lockch" type="checkbox" checked={lockChannel} onChange={function(e){ setLockChannel(e.target.checked); }} />
+              <label htmlFor="lockch" className="muted-inline">Lock channel = instance</label>
+            </span>
+
+            {!lockChannel && (
+              <>
+                <label className="muted-inline">Channel:</label>
+                <input type="text" value={channel} onChange={function(e){ setChannel(e.target.value.trim() || DEFAULT_CHANNEL); }} style={{width:'140px'}} />
+              </>
+            )}
           </div>
 
           <div className="row">
@@ -382,7 +405,7 @@
       const onKey = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(card); } };
       return (
         <div role="button" tabIndex={0} onClick={function () { onSelect(card); }} onKeyDown={onKey} style={{display:"flex", gap:"10px", padding:"10px", alignItems:"center", cursor:"pointer"}}>
-          {src ? <img src={src} alt="" style={{width:"80px", borderRadius:"8px", border:"1px solid #e2e8f0"}} loading="lazy" /> : <div style={{width:"80px", aspectRatio:"146/204", background:"#f1f5g9", borderRadius:"8px"}}/>}
+          {src ? <img src={src} alt="" style={{width:"80px", borderRadius:"8px", border:"1px solid #e2e8f0"}} loading="lazy" /> : <div style={{width:"80px", aspectRatio:"146/204", background:"#f1f5f9", borderRadius:"8px"}}/>}
           <div style={{minWidth:0}}>
             <div className="title" style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>{card.name} {card._source && <span className="badge">{card._source}</span>}</div>
             <div className="sub">{(card.set || "Unknown Set")} &middot; #{card.number || "?"}</div>
@@ -416,7 +439,7 @@
       const params = new URLSearchParams(location.search);
       const fit = params.get('fit') || 'contain';
       const bg = params.get('bg') || 'transparent';
-      const channel = params.get('c') || DEFAULT_CHANNEL;
+      const channel = params.get('c') || getInstanceFromURL() || DEFAULT_CHANNEL;
 
       useEffect(function () { if (bg !== 'transparent') document.body.style.background = bg; }, [bg]);
 
@@ -427,32 +450,25 @@
       const db = useMemo(initFirebase, []);
 
       function applyPayload(payload) {
-        // Allow blanking the overlay when image is empty
         if (!payload || !payload.image) {
-          setSrc('');
-          setTitle('');
-          setLoaded(true);
-          return;
+          setSrc(''); setTitle(''); setLoaded(true); return;
         }
         var newSrc = payload.image;
         var newTitle = payload.title || '';
         preload(newSrc, function(ok){
           if (ok) {
-            setSrc(newSrc);
-            setTitle(newTitle);
-            setLoaded(false);
-            setTimeout(function(){ setLoaded(true); }, 0);
+            setSrc(newSrc); setTitle(newTitle);
+            setLoaded(false); setTimeout(function(){ setLoaded(true); }, 0);
           }
         });
       }
 
-      // Initial local read
+      // Initial local read (instance-scoped)
       useEffect(function () {
         try {
           var raw = localStorage.getItem(k('overlayPayload'));
           var payload = null;
           try { payload = raw ? JSON.parse(raw) : null; } catch (e) {}
-          // Apply payload even if image is blank; use updatedAt to track
           if (payload && typeof payload.updatedAt !== 'undefined') {
             setStamp(String(payload.updatedAt || ''));
             applyPayload(payload);
@@ -465,13 +481,12 @@
         } catch (e) {}
       }, []);
 
-      // Firebase realtime (optional; ignored if perms deny)
+      // Firebase realtime
       useEffect(function () {
         if (!db) return;
         var ref = db.ref('/lorcana/' + channel);
         var unsub = ref.on('value', function (snap) {
           var v = snap.val() || {};
-          // React to any updatedAt change, even when image is blank
           if (v && v.updatedAt && String(v.updatedAt) !== String(stamp)) {
             setStamp(String(v.updatedAt));
             applyPayload(v);
