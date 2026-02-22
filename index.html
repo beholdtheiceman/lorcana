@@ -31,6 +31,9 @@
     .wrap { width:100vw; height:100vh; display:grid; place-items:center; }
     .fade-in { opacity: 0; transition: opacity .2s ease-in; }
     .fade-in.loaded { opacity: 1; }
+    .filters { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:0 0 14px; }
+    .chip { display:inline-flex; align-items:center; padding:5px 14px; border-radius:999px; font-size:13px; font-weight:500; cursor:pointer; border:2px solid #e2e8f0; background:#f8fafc; color:#64748b; transition:background .15s,color .15s,border-color .15s; user-select:none; }
+    .chip:hover { border-color:#cbd5e1; color:#334155; }
   </style>
 </head>
 <body>
@@ -104,6 +107,13 @@
           _raw: item
         } : null;
       }
+      var RARITY_CHIPS = [
+        { key:"Enchanted", color:"#92400e", activeColor:"#b45309" },
+        { key:"Epic",      color:"#5b21b6", activeColor:"#7c3aed" },
+        { key:"Iconic",    color:"#9d174d", activeColor:"#db2777" },
+        { key:"Promo",     color:"#155e75", activeColor:"#0891b2" },
+      ];
+
       function mapFromLorcast(item){
         if(!item) return null;
         var dig = item.image_uris && item.image_uris.digital;
@@ -112,7 +122,7 @@
         var setName = (item.set && item.set.name) || "";
         var number = item.collector_number || item.number || "";
         var id = (item.id || (item.name+"-"+number+"-"+setName)).toString();
-        return img ? { id:id, name:item.name||"", set:setName, number:number, image_url:img, _source:"Lorcast", _raw:item } : null;
+        return img ? { id:id, name:item.name||"", set:setName, number:number, rarity:item.rarity||"", image_url:img, _source:"Lorcast", _raw:item } : null;
       }
       async function fetchFromLorcanaAPI(query){
         try {
@@ -160,12 +170,13 @@
       }
 
       function Controller(){
-        const [query,setQuery]     = useState("");
-        const [cards,setCards]     = useState([]);
-        const [loading,setLoading] = useState(false);
-        const [error,setError]     = useState("");
-        const [selected,setSel]    = useState(null);
-        const [copyMsg,setCopyMsg] = useState("");
+        const [query,setQuery]       = useState("");
+        const [cards,setCards]       = useState([]);
+        const [loading,setLoading]   = useState(false);
+        const [error,setError]       = useState("");
+        const [selected,setSel]      = useState(null);
+        const [copyMsg,setCopyMsg]   = useState("");
+        const [rarityFilters,setRarityFilters] = useState({ Enchanted:false, Epic:false, Iconic:false, Promo:false });
 
         const db = useMemo(initFirebase, []);
         const debounced = useDebounced(query, 350);
@@ -249,6 +260,9 @@
           }
         }
 
+        var activeFilters = RARITY_CHIPS.filter(function(f){ return rarityFilters[f.key]; }).map(function(f){ return f.key; });
+        var filteredCards = activeFilters.length === 0 ? cards : cards.filter(function(c){ return activeFilters.indexOf(c.rarity) !== -1; });
+
         return h("div", { className:"container" },
           h("div", { className:"header" },
             h("h1", null, "Lorcana Card Image Browser"),
@@ -260,6 +274,24 @@
               placeholder:"Search by name, type, text, ink, rarity...",
               value: query,
               onChange: function(e){ setQuery(e.target.value); }
+            })
+          ),
+          h("div", { className:"filters" },
+            h("span", { className:"muted", style:{ fontSize:"13px" } }, "Filter:"),
+            RARITY_CHIPS.map(function(f){
+              var active = rarityFilters[f.key];
+              return h("span", {
+                key: f.key,
+                className: "chip",
+                style: active ? { background:f.activeColor, color:"#fff", borderColor:f.activeColor } : {},
+                onClick: function(){
+                  setRarityFilters(function(prev){
+                    var next = Object.assign({}, prev);
+                    next[f.key] = !prev[f.key];
+                    return next;
+                  });
+                }
+              }, f.key);
             })
           ),
           h("div", { className:"row" },
@@ -279,7 +311,7 @@
           loading ? h("div", { className:"muted" }, "Searching...") : null,
           error ? h("div", { className:"error" }, error) : null,
           h("div", { className:"grid" },
-            (cards||[]).map(function(card){
+            (filteredCards||[]).map(function(card){
               return h("figure", {
                   key: card.id,
                   role:"button",
