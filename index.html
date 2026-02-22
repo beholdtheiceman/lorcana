@@ -131,6 +131,7 @@
         try {
           var url = new URL("https://api.lorcast.com/v0/cards/search");
           url.searchParams.set("q", query || "");
+          url.searchParams.set("unique", "prints");
           var res = await fetch(url.toString(), { headers: { "Accept": "application/json" } });
           if(!res.ok) throw 0;
           var data = await res.json();
@@ -142,9 +143,9 @@
       }
       async function searchCards(query){
         if(!query) return [];
-        var primary = await fetchFromLorcanaAPI(query);
+        var primary = await fetchFromLorcast(query);
         if(primary && primary.length) return primary;
-        return await fetchFromLorcast(query);
+        return await fetchFromLorcanaAPI(query);
       }
 
       // ===== Components =====
