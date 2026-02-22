@@ -107,7 +107,8 @@
       function mapFromLorcast(item){
         if(!item) return null;
         var dig = item.image_uris && item.image_uris.digital;
-        var img = (dig && (dig.large || dig.normal || dig.small)) || "";
+        var fullUrl = (dig && dig.large) ? dig.large.replace('/large/', '/full/').replace('.avif', '.jpg') : '';
+        var img = fullUrl || (dig && (dig.large || dig.normal || dig.small)) || "";
         var setName = (item.set && item.set.name) || "";
         var number = item.collector_number || item.number || "";
         var id = (item.id || (item.name+"-"+number+"-"+setName)).toString();
